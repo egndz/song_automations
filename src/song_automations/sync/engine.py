@@ -10,6 +10,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from song_automations.clients.discogs import DiscogsClient, Folder, Release, Track
 from song_automations.config import Settings
 from song_automations.matching.fuzzy import (
+    MatchDetails,
     MatchResult,
     parse_track_title,
     score_candidate,
@@ -112,6 +113,108 @@ class SyncEngine:
         self._discogs = discogs_client
         self._state = state_tracker
         self._console = console or Console()
+        self._flagged_tracks: list[MatchDetails] = []
+
+    def _print_match_details(self, details: MatchDetails) -> None:
+        """Print detailed match information to console.
+
+        Args:
+            details: Match details to display.
+        """
+        console = self._console
+
+        console.print(f"\n  [cyan]Searching:[/cyan] {details.source_artist} - {details.source_title}")
+        console.print(f"    Query: \"{details.search_query}\"")
+
+        if details.cache_hit:
+            console.print("    [dim](cached result)[/dim]")
+            if details.match_result:
+                console.print(f"    [green]Matched:[/green] \"{details.match_result.matched_title}\" by {details.match_result.matched_artist}")
+                console.print(f"    Confidence: {details.match_result.confidence:.1%}")
+            return
+
+        if details.fallback_used:
+            console.print(f"    [yellow]Fallback:[/yellow] \"{details.fallback_query}\" (no results with version)")
+
+        console.print(f"    Candidates: {details.candidates_evaluated}")
+
+        if details.decision == "missing":
+            console.print(f"    [red]MISSING[/red] - {details.rejection_reason}")
+            return
+
+        if details.match_result:
+            mr = details.match_result
+            verified_str = " [blue](verified)[/blue]" if mr.is_verified else ""
+            console.print(f"    [green]Best:[/green] \"{mr.matched_title}\" by {mr.matched_artist}{verified_str}")
+            console.print(f"          {mr.track_uri}")
+            console.print()
+
+            artist_pct = mr.artist_score * 100
+            title_pct = mr.title_score * 100
+            pop_pct = mr.popularity_score * 100
+            verified_label = "YES" if mr.is_verified else "NO "
+
+            artist_contrib = mr.artist_score * 0.40
+            title_contrib = mr.title_score * 0.30
+            verified_contrib = mr.verified_bonus * 0.20
+            pop_contrib = mr.popularity_score * 0.10
+
+            console.print(f"    [dim]Scores:[/dim]  Artist {artist_pct:5.1f}% (x0.40={artist_contrib:.3f})  "
+                         f"Title {title_pct:5.1f}% (x0.30={title_contrib:.3f})  "
+                         f"Verified {verified_label} (x0.20={verified_contrib:.3f})  "
+                         f"Pop {pop_pct:5.1f}% (x0.10={pop_contrib:.3f})")
+
+            if details.decision == "accepted":
+                console.print(f"    [dim]Total:[/dim]   [green]{mr.confidence:.1%}  ACCEPTED[/green]")
+            elif details.decision == "flagged":
+                console.print(f"    [dim]Total:[/dim]   [yellow]{mr.confidence:.1%}  FLAGGED[/yellow] (below {self._settings.high_confidence:.0%} high-confidence)")
+            elif details.decision == "rejected":
+                console.print(f"    [dim]Total:[/dim]   [red]{mr.confidence:.1%}  REJECTED[/red] - {details.rejection_reason}")
+
+    def _print_flagged_summary(self) -> None:
+        """Print summary table of flagged tracks at end of sync."""
+        if not self._flagged_tracks:
+            return
+
+        from rich.table import Table
+
+        console = self._console
+        console.print("\n[bold yellow]Tracks Flagged for Review[/bold yellow] (30-50% confidence):\n")
+
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("Discogs Track", style="cyan", max_width=40)
+        table.add_column("Matched To", style="green", max_width=35)
+        table.add_column("Artist", justify="right")
+        table.add_column("Title", justify="right")
+        table.add_column("Ver", justify="center")
+        table.add_column("Pop", justify="right")
+        table.add_column("Total", justify="right", style="yellow")
+
+        for details in self._flagged_tracks[:20]:
+            if details.match_result:
+                mr = details.match_result
+                discogs_track = f"{details.source_artist} - {details.source_title}"
+                if len(discogs_track) > 40:
+                    discogs_track = discogs_track[:37] + "..."
+
+                matched_to = f"{mr.matched_artist} - {mr.matched_title}"
+                if len(matched_to) > 35:
+                    matched_to = matched_to[:32] + "..."
+
+                table.add_row(
+                    discogs_track,
+                    matched_to,
+                    f"{mr.artist_score:.0%}",
+                    f"{mr.title_score:.0%}",
+                    "YES" if mr.is_verified else "NO",
+                    f"{mr.popularity_score:.0%}",
+                    f"{mr.confidence:.0%}",
+                )
+
+        console.print(table)
+
+        if len(self._flagged_tracks) > 20:
+            console.print(f"\n[dim]... and {len(self._flagged_tracks) - 20} more flagged tracks[/dim]")
 
     def sync_to_spotify(
         self,
@@ -186,6 +289,7 @@ class SyncEngine:
             SyncResult with operation details.
         """
         result = SyncResult()
+        self._flagged_tracks = []
 
         with Progress(
             SpinnerColumn(),
@@ -233,6 +337,8 @@ class SyncEngine:
             )
             result.operations.extend(deleted_result.operations)
             result.playlists_deleted += deleted_result.playlists_deleted
+
+        self._print_flagged_summary()
 
         return result
 
@@ -310,13 +416,15 @@ class SyncEngine:
             tracks = self._discogs.get_release_tracks(release.id)
 
             for track in tracks:
-                match_result = self._find_track_match(
+                match_result, details = self._find_track_match(
                     track=track,
                     release=release,
                     playlist_client=playlist_client,
                     destination=destination,
                     folder_id=folder.id,
                 )
+
+                self._print_match_details(details)
 
                 if match_result:
                     track_id = str(match_result.track_id)
@@ -340,6 +448,7 @@ class SyncEngine:
 
                     if flagged:
                         result.tracks_flagged += 1
+                        self._flagged_tracks.append(details)
                 else:
                     result.tracks_missing += 1
                     self._state.save_missing_track(
@@ -397,7 +506,7 @@ class SyncEngine:
         playlist_client: PlaylistClient,
         destination: Destination,
         folder_id: int,
-    ) -> MatchResult | None:
+    ) -> tuple[MatchResult | None, MatchDetails]:
         """Find a matching track on the target platform.
 
         Args:
@@ -408,11 +517,13 @@ class SyncEngine:
             folder_id: Discogs folder ID.
 
         Returns:
-            MatchResult if found, None otherwise.
+            Tuple of (MatchResult if found else None, MatchDetails with full breakdown).
         """
+        parsed = parse_track_title(track.title, track.artist)
+
         cached = self._state.get_cached_match(release.id, track.position, destination)
         if cached and cached.destination_track_id:
-            return MatchResult(
+            match_result = MatchResult(
                 track_id=cached.destination_track_id,
                 track_uri="",
                 confidence=cached.match_confidence,
@@ -424,13 +535,26 @@ class SyncEngine:
                 matched_title=cached.track_name,
                 matched_artist=cached.artist,
             )
-
-        parsed = parse_track_title(track.title, track.artist)
+            details = MatchDetails(
+                source_artist=track.artist,
+                source_title=track.title,
+                search_query=parsed.search_query,
+                fallback_used=False,
+                fallback_query=parsed.fallback_query,
+                candidates_evaluated=0,
+                cache_hit=True,
+                match_result=match_result,
+                decision="accepted" if match_result.confidence >= self._settings.high_confidence else "flagged",
+                rejection_reason=None,
+            )
+            return match_result, details
 
         search_results = playlist_client.search_tracks(parsed.search_query, limit=10)
+        fallback_used = False
 
         if not search_results and should_use_fallback(parsed):
             search_results = playlist_client.search_tracks(parsed.fallback_query, limit=10)
+            fallback_used = True
 
         if not search_results:
             self._state.save_matched_track(
@@ -442,12 +566,26 @@ class SyncEngine:
                 destination_track_id=None,
                 match_confidence=0.0,
             )
-            return None
+            details = MatchDetails(
+                source_artist=track.artist,
+                source_title=track.title,
+                search_query=parsed.search_query,
+                fallback_used=fallback_used,
+                fallback_query=parsed.fallback_query,
+                candidates_evaluated=0,
+                cache_hit=False,
+                match_result=None,
+                decision="missing",
+                rejection_reason="No search results found",
+            )
+            return None, details
 
         best_match: MatchResult | None = None
         best_score = 0.0
+        candidates_evaluated = 0
 
         for search_result in search_results:
+            candidates_evaluated += 1
             result_track = search_result.track
 
             if destination == "spotify":
@@ -503,7 +641,25 @@ class SyncEngine:
                 destination_track_id=str(best_match.track_id),
                 match_confidence=best_match.confidence,
             )
-            return best_match
+
+            if best_match.confidence >= self._settings.high_confidence:
+                decision = "accepted"
+            else:
+                decision = "flagged"
+
+            details = MatchDetails(
+                source_artist=track.artist,
+                source_title=track.title,
+                search_query=parsed.search_query,
+                fallback_used=fallback_used,
+                fallback_query=parsed.fallback_query,
+                candidates_evaluated=candidates_evaluated,
+                cache_hit=False,
+                match_result=best_match,
+                decision=decision,
+                rejection_reason=None,
+            )
+            return best_match, details
 
         self._state.save_matched_track(
             discogs_release_id=release.id,
@@ -514,7 +670,20 @@ class SyncEngine:
             destination_track_id=None,
             match_confidence=best_score,
         )
-        return None
+
+        details = MatchDetails(
+            source_artist=track.artist,
+            source_title=track.title,
+            search_query=parsed.search_query,
+            fallback_used=fallback_used,
+            fallback_query=parsed.fallback_query,
+            candidates_evaluated=candidates_evaluated,
+            cache_hit=False,
+            match_result=best_match,
+            decision="rejected",
+            rejection_reason=f"Best score {best_score:.1%} below {self._settings.min_confidence:.0%} threshold",
+        )
+        return None, details
 
     def _cleanup_deleted_folders(
         self,
