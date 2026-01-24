@@ -316,14 +316,14 @@ class SoundCloudClient:
 
     def create_playlist(
         self,
-        title: str,
+        name: str,
         description: str = "",
         public: bool = True,
     ) -> SoundCloudPlaylist:
         """Create a new playlist.
 
         Args:
-            title: Playlist title.
+            name: Playlist name.
             description: Playlist description.
             public: Whether the playlist is public.
 
@@ -332,7 +332,7 @@ class SoundCloudClient:
         """
         data = {
             "playlist": {
-                "title": title,
+                "title": name,
                 "description": description,
                 "sharing": "public" if public else "private",
                 "tracks": [],

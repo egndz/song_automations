@@ -121,7 +121,7 @@ class DiscogsClient:
             folder_id: The folder ID to find.
 
         Returns:
-            The folder object, or None if not found.
+            The folder object or None if not found.
         """
         for folder in self.user.collection_folders:
             if folder.id == folder_id:

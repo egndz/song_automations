@@ -86,35 +86,6 @@ class MatchResult:
     matched_artist: str
 
 
-@dataclass
-class MatchDetails:
-    """Detailed breakdown of a match decision for verbose output.
-
-    Args:
-        source_artist: Original artist name from Discogs.
-        source_title: Original track title from Discogs.
-        search_query: The search query used to find candidates.
-        fallback_used: Whether fallback search (without version) was used.
-        fallback_query: The fallback query if used.
-        candidates_evaluated: Number of candidates scored.
-        cache_hit: Whether match was retrieved from cache.
-        match_result: The winning match result (None if no match).
-        decision: Decision made - "accepted", "flagged", "rejected", or "missing".
-        rejection_reason: Reason for rejection if applicable.
-    """
-
-    source_artist: str
-    source_title: str
-    search_query: str
-    fallback_used: bool
-    fallback_query: str
-    candidates_evaluated: int
-    cache_hit: bool
-    match_result: MatchResult | None
-    decision: str
-    rejection_reason: str | None = None
-
-
 class SearchableTrack(Protocol):
     """Protocol for tracks that can be matched against."""
 
