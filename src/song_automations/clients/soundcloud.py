@@ -1,5 +1,6 @@
 """SoundCloud API client for playlist management and track search."""
 
+import base64
 import hashlib
 import json
 import secrets
@@ -155,8 +156,8 @@ class SoundCloudClient:
             Tuple of (code_verifier, code_challenge).
         """
         code_verifier = secrets.token_urlsafe(64)[:128]
-        code_challenge = hashlib.sha256(code_verifier.encode()).digest()
-        code_challenge = secrets.token_urlsafe(32)
+        digest = hashlib.sha256(code_verifier.encode()).digest()
+        code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
         return code_verifier, code_challenge
 
     def authenticate(self) -> None:
