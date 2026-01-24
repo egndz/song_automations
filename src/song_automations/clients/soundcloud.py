@@ -300,18 +300,18 @@ class SoundCloudClient:
 
         return playlists
 
-    def find_playlist_by_title(self, title: str) -> SoundCloudPlaylist | None:
-        """Find a playlist by exact title match.
+    def find_playlist_by_name(self, name: str) -> SoundCloudPlaylist | None:
+        """Find a playlist by exact name match.
 
         Args:
-            title: Playlist title to search for.
+            name: Playlist name to search for.
 
         Returns:
             SoundCloudPlaylist if found, None otherwise.
         """
         playlists = self.get_user_playlists()
         for playlist in playlists:
-            if playlist.title == title:
+            if playlist.title == name:
                 return playlist
         return None
 
