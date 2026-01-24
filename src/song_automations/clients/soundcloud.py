@@ -502,7 +502,7 @@ class SoundCloudClient:
         Returns:
             Parsed SoundCloudTrack object.
         """
-        user = item.get("user", {})
+        user = item.get("user") or {}
         return SoundCloudTrack(
             id=item["id"],
             permalink_url=item.get("permalink_url", ""),
