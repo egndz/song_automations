@@ -51,8 +51,8 @@ htmlcov/
 # SQLite database (created at runtime)
 *.db
 
-# Reports generated at runtime
-reports/
+# Reports generated at runtime (in data directory, not src)
+/reports/
 
 # OS files
 .DS_Store
