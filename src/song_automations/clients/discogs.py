@@ -114,6 +114,20 @@ class DiscogsClient:
             )
         return folders
 
+    def _get_folder_by_id(self, folder_id: int):
+        """Get a collection folder by its ID.
+
+        Args:
+            folder_id: The folder ID to find.
+
+        Returns:
+            The folder object or None if not found.
+        """
+        for folder in self.user.collection_folders:
+            if folder.id == folder_id:
+                return folder
+        return None
+
     def get_folder_releases(self, folder_id: int) -> Iterator[Release]:
         """Get all releases in a specific folder.
 
@@ -123,7 +137,9 @@ class DiscogsClient:
         Yields:
             Release objects for each release in the folder.
         """
-        folder = self.user.collection_folders[folder_id]
+        folder = self._get_folder_by_id(folder_id)
+        if folder is None:
+            return
         for item in folder.releases:
             release = item.release
             artists = self._extract_artists(release.artists)
