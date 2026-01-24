@@ -407,7 +407,7 @@ class SoundCloudClient:
             track_ids: List of track IDs to set.
 
         Raises:
-            httpx.HTTPStatusError: If the request fails (except 422 which is logged).
+            httpx.HTTPStatusError: If the request fails.
         """
         data = {
             "playlist": {
@@ -422,9 +422,45 @@ class SoundCloudClient:
                 json=data,
             )
             if response.status_code == 422:
-                pass
+                valid_ids = self._add_tracks_individually(playlist_id, track_ids, client)
+                if valid_ids:
+                    data["playlist"]["tracks"] = [{"id": tid} for tid in valid_ids]
+                    client.put(
+                        f"{self.API_BASE}/playlists/{playlist_id}",
+                        headers=self._get_headers(),
+                        json=data,
+                    )
             else:
                 response.raise_for_status()
+
+    def _add_tracks_individually(
+        self,
+        playlist_id: int,
+        track_ids: list[int],
+        client: httpx.Client,
+    ) -> list[int]:
+        """Try adding tracks one by one to find valid IDs.
+
+        Args:
+            playlist_id: SoundCloud playlist ID.
+            track_ids: List of track IDs to try.
+            client: HTTP client to use.
+
+        Returns:
+            List of valid track IDs that were successfully added.
+        """
+        valid_ids: list[int] = []
+        for tid in track_ids:
+            test_ids = valid_ids + [tid]
+            data = {"playlist": {"tracks": [{"id": t} for t in test_ids]}}
+            response = client.put(
+                f"{self.API_BASE}/playlists/{playlist_id}",
+                headers=self._get_headers(),
+                json=data,
+            )
+            if response.status_code == 200:
+                valid_ids.append(tid)
+        return valid_ids
 
     def add_tracks_to_playlist(
         self,
