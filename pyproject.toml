@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "song-automations"
+version = "0.1.0"
+description = "Sync Discogs collection folders to Spotify and SoundCloud playlists"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [
+    { name = "Egehan Gunduz" }
+]
+keywords = ["discogs", "spotify", "soundcloud", "playlist", "sync", "music"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio",
+]
+dependencies = [
+    "typer>=0.9.0",
+    "python3-discogs-client>=2.7.0",
+    "spotipy>=2.23.0",
+    "httpx>=0.27.0",
+    "rapidfuzz>=3.6.0",
+    "pydantic-settings>=2.2.0",
+    "rich>=13.7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.3.0",
+]
+
+[project.scripts]
+song-automations = "song_automations.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/song_automations"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
