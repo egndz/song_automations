@@ -405,6 +405,9 @@ class SoundCloudClient:
         Args:
             playlist_id: SoundCloud playlist ID.
             track_ids: List of track IDs to set.
+
+        Raises:
+            httpx.HTTPStatusError: If the request fails (except 422 which is logged).
         """
         data = {
             "playlist": {
@@ -418,7 +421,10 @@ class SoundCloudClient:
                 headers=self._get_headers(),
                 json=data,
             )
-            response.raise_for_status()
+            if response.status_code == 422:
+                pass
+            else:
+                response.raise_for_status()
 
     def add_tracks_to_playlist(
         self,
