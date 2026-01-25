@@ -5,6 +5,7 @@
 
 # Claude Code settings
 .claude/
+CLAUDE.md
 
 # Python
 __pycache__/
