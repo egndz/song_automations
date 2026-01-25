@@ -353,6 +353,11 @@ class SoundCloudClient:
             f"{self.API_BASE}/me/playlists",
             headers=self._get_headers(),
         )
+        if self._handle_auth_error(response):
+            response = self._http_client.get(
+                f"{self.API_BASE}/me/playlists",
+                headers=self._get_headers(),
+            )
         handle_rate_limit(response)
         response.raise_for_status()
         items = response.json()
@@ -419,6 +424,12 @@ class SoundCloudClient:
             headers=self._get_headers(),
             json=data,
         )
+        if self._handle_auth_error(response):
+            response = self._http_client.post(
+                f"{self.API_BASE}/playlists",
+                headers=self._get_headers(),
+                json=data,
+            )
         handle_rate_limit(response)
         response.raise_for_status()
         result = response.json()
@@ -442,6 +453,11 @@ class SoundCloudClient:
             f"{self.API_BASE}/playlists/{playlist_id}",
             headers=self._get_headers(),
         )
+        if self._handle_auth_error(response):
+            response = self._http_client.delete(
+                f"{self.API_BASE}/playlists/{playlist_id}",
+                headers=self._get_headers(),
+            )
         handle_rate_limit(response)
         response.raise_for_status()
 
@@ -458,6 +474,11 @@ class SoundCloudClient:
             f"{self.API_BASE}/playlists/{playlist_id}",
             headers=self._get_headers(),
         )
+        if self._handle_auth_error(response):
+            response = self._http_client.get(
+                f"{self.API_BASE}/playlists/{playlist_id}",
+                headers=self._get_headers(),
+            )
         handle_rate_limit(response)
         response.raise_for_status()
         data = response.json()
@@ -494,6 +515,12 @@ class SoundCloudClient:
             headers=self._get_headers(),
             json=data,
         )
+        if self._handle_auth_error(response):
+            response = self._http_client.put(
+                f"{self.API_BASE}/playlists/{playlist_id}",
+                headers=self._get_headers(),
+                json=data,
+            )
         handle_rate_limit(response)
         if response.status_code == 422:
             valid_ids = self._add_tracks_individually(playlist_id, track_ids)
