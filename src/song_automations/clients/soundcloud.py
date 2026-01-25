@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
+from song_automations.clients.http import DEFAULT_TIMEOUT, handle_rate_limit
 from song_automations.config import Settings
 
 
@@ -200,8 +201,9 @@ class SoundCloudClient:
             "code_verifier": code_verifier,
         }
 
-        with httpx.Client() as client:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             response = client.post(self.TOKEN_URL, data=token_data)
+            handle_rate_limit(response)
             response.raise_for_status()
             tokens = response.json()
 
@@ -224,11 +226,12 @@ class SoundCloudClient:
     def user_id(self) -> int:
         """Get the authenticated user's ID."""
         if self._user_id is None:
-            with httpx.Client() as client:
+            with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
                 response = client.get(
                     f"{self.API_BASE}/me",
                     headers=self._get_headers(),
                 )
+                handle_rate_limit(response)
                 response.raise_for_status()
                 self._user_id = response.json()["id"]
         return self._user_id
@@ -247,12 +250,13 @@ class SoundCloudClient:
         Returns:
             List of SearchResult objects.
         """
-        with httpx.Client() as client:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             response = client.get(
                 f"{self.API_BASE}/tracks",
                 headers=self._get_headers(),
                 params={"q": query, "limit": limit},
             )
+            handle_rate_limit(response)
             response.raise_for_status()
             items = response.json()
 
@@ -275,11 +279,12 @@ class SoundCloudClient:
         """
         playlists = []
 
-        with httpx.Client() as client:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             response = client.get(
                 f"{self.API_BASE}/me/playlists",
                 headers=self._get_headers(),
             )
+            handle_rate_limit(response)
             response.raise_for_status()
             items = response.json()
 
@@ -340,12 +345,13 @@ class SoundCloudClient:
             }
         }
 
-        with httpx.Client() as client:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             response = client.post(
                 f"{self.API_BASE}/playlists",
                 headers=self._get_headers(),
                 json=data,
             )
+            handle_rate_limit(response)
             response.raise_for_status()
             result = response.json()
 
@@ -364,11 +370,12 @@ class SoundCloudClient:
         Args:
             playlist_id: SoundCloud playlist ID.
         """
-        with httpx.Client() as client:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             response = client.delete(
                 f"{self.API_BASE}/playlists/{playlist_id}",
                 headers=self._get_headers(),
             )
+            handle_rate_limit(response)
             response.raise_for_status()
 
     def get_playlist_tracks(self, playlist_id: int) -> list[SoundCloudTrack]:
@@ -380,11 +387,12 @@ class SoundCloudClient:
         Returns:
             List of SoundCloudTrack objects.
         """
-        with httpx.Client() as client:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             response = client.get(
                 f"{self.API_BASE}/playlists/{playlist_id}",
                 headers=self._get_headers(),
             )
+            handle_rate_limit(response)
             response.raise_for_status()
             data = response.json()
 
@@ -415,21 +423,23 @@ class SoundCloudClient:
             }
         }
 
-        with httpx.Client() as client:
+        with httpx.Client(timeout=DEFAULT_TIMEOUT) as client:
             response = client.put(
                 f"{self.API_BASE}/playlists/{playlist_id}",
                 headers=self._get_headers(),
                 json=data,
             )
+            handle_rate_limit(response)
             if response.status_code == 422:
                 valid_ids = self._add_tracks_individually(playlist_id, track_ids, client)
                 if valid_ids:
                     data["playlist"]["tracks"] = [{"id": tid} for tid in valid_ids]
-                    client.put(
+                    retry_response = client.put(
                         f"{self.API_BASE}/playlists/{playlist_id}",
                         headers=self._get_headers(),
                         json=data,
                     )
+                    handle_rate_limit(retry_response)
             else:
                 response.raise_for_status()
 
@@ -458,6 +468,7 @@ class SoundCloudClient:
                 headers=self._get_headers(),
                 json=data,
             )
+            handle_rate_limit(response)
             if response.status_code == 200:
                 valid_ids.append(tid)
         return valid_ids

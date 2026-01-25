@@ -6,13 +6,13 @@ Trackable checklist for song_automations improvements.
 
 ## Phase 1: Reliability Foundation (CRITICAL)
 
-- [ ] Add `tenacity` dependency to pyproject.toml
-- [ ] Create retry decorator with exponential backoff (3 attempts, 2-30s wait)
-- [ ] Add explicit timeouts to httpx calls: `httpx.Timeout(30.0, connect=10.0)`
-- [ ] Replace `except Exception: pass` with specific error handling in spotify.py:142
-- [ ] Add rate limit detection (429 status) with `Retry-After` header handling
+- [x] Add `tenacity` dependency to pyproject.toml
+- [x] Create retry decorator with exponential backoff (3 attempts, 2-30s wait)
+- [x] Add explicit timeouts to httpx calls: `httpx.Timeout(30.0, connect=10.0)`
+- [x] Replace `except Exception: pass` with specific error handling in spotify.py:142
+- [x] Add rate limit detection (429 status) with `Retry-After` header handling
 
-**Files:** `soundcloud.py`, `spotify.py`, `pyproject.toml`
+**Files:** `soundcloud.py`, `spotify.py`, `pyproject.toml`, `clients/http.py` (new)
 
 ---
 

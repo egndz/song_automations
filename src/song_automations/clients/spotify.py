@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Iterator
 
 import spotipy
+from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyOAuth
 
 from song_automations.config import Settings
@@ -139,7 +140,7 @@ class SpotifyClient:
                 try:
                     artist_info = self._client.artist(artist_id)
                     is_verified = artist_info.get("followers", {}).get("total", 0) > 10000
-                except Exception:
+                except SpotifyException:
                     pass
 
             search_results.append(SearchResult(track=track, is_verified=is_verified))
