@@ -31,9 +31,9 @@ Trackable checklist for song_automations improvements.
 
 ## Phase 3: Spotify API Optimization (HIGH)
 
-- [ ] Batch artist lookups: collect unique IDs, use `self._client.artists(ids)`
-- [ ] Add playlist cache with 5-minute TTL
-- [ ] Add proper exception handling for artist lookup failures
+- [x] Batch artist lookups: collect unique IDs, use `self._client.artists(ids)`
+- [x] Add playlist cache with 5-minute TTL
+- [x] Add proper exception handling for artist lookup failures (done in Phase 1)
 
 **File:** `spotify.py`
 
