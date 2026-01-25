@@ -507,6 +507,25 @@ class StateTracker:
             else:
                 conn.execute("DELETE FROM missing_tracks")
 
+    def clear_matched_tracks(self, destination: Destination | None = None) -> int:
+        """Clear matched tracks cache to force re-matching.
+
+        Args:
+            destination: Optional filter by destination (spotify/soundcloud).
+
+        Returns:
+            Number of records deleted.
+        """
+        with self._get_connection() as conn:
+            if destination:
+                cursor = conn.execute(
+                    "DELETE FROM matched_tracks WHERE destination = ?",
+                    (destination,),
+                )
+            else:
+                cursor = conn.execute("DELETE FROM matched_tracks")
+            return cursor.rowcount
+
     def get_matched_track_ids(
         self,
         discogs_release_id: int,
