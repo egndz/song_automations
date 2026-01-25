@@ -154,6 +154,10 @@ class StateTracker:
                     ON matched_tracks(destination);
                 CREATE INDEX IF NOT EXISTS idx_missing_tracks_destination
                     ON missing_tracks(destination);
+                CREATE INDEX IF NOT EXISTS idx_matched_tracks_lookup
+                    ON matched_tracks(discogs_release_id, discogs_track_position, destination);
+                CREATE INDEX IF NOT EXISTS idx_folder_releases_folder
+                    ON folder_releases(discogs_folder_id);
             """
             )
 
@@ -290,14 +294,13 @@ class StateTracker:
                 (discogs_folder_id,),
             )
 
-            for release_id in release_ids:
-                conn.execute(
-                    """
-                    INSERT INTO folder_releases (discogs_folder_id, discogs_release_id)
-                    VALUES (?, ?)
-                    """,
-                    (discogs_folder_id, release_id),
-                )
+            conn.executemany(
+                """
+                INSERT INTO folder_releases (discogs_folder_id, discogs_release_id)
+                VALUES (?, ?)
+                """,
+                [(discogs_folder_id, rid) for rid in release_ids],
+            )
 
     def get_folder_release_ids(self, discogs_folder_id: int) -> list[int]:
         """Get all release IDs in a folder from the last sync.
@@ -324,6 +327,7 @@ class StateTracker:
         discogs_release_id: int,
         track_position: str,
         destination: Destination,
+        max_age_days: int = 30,
     ) -> MatchedTrack | None:
         """Get a cached track match.
 
@@ -331,9 +335,10 @@ class StateTracker:
             discogs_release_id: Discogs release ID.
             track_position: Track position (e.g., A1).
             destination: Target platform.
+            max_age_days: Maximum age of cache entry in days (default 30).
 
         Returns:
-            MatchedTrack if found, None otherwise.
+            MatchedTrack if found and not expired, None otherwise.
         """
         with self._get_connection() as conn:
             row = conn.execute(
@@ -342,8 +347,9 @@ class StateTracker:
                 WHERE discogs_release_id = ?
                 AND discogs_track_position = ?
                 AND destination = ?
+                AND searched_at > datetime('now', ?)
                 """,
-                (discogs_release_id, track_position, destination),
+                (discogs_release_id, track_position, destination, f"-{max_age_days} days"),
             ).fetchone()
 
             if row is None:

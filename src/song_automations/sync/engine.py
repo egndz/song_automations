@@ -1,9 +1,12 @@
 """Core sync engine for playlist synchronization."""
 
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
+
+HIGH_CONFIDENCE_THRESHOLD = 0.95
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
@@ -472,6 +475,11 @@ class SyncEngine:
                 is_verified=is_verified,
                 popularity=popularity,
                 max_popularity=max_pop,
+                artist_weight=self._settings.artist_weight,
+                title_weight=self._settings.title_weight,
+                verified_weight=self._settings.verified_weight,
+                popularity_weight=self._settings.popularity_weight,
+                version_bonus_weight=self._settings.version_match_bonus,
             )
 
             if total_score > best_score:
@@ -496,6 +504,9 @@ class SyncEngine:
                     matched_title=candidate_title,
                     matched_artist=candidate_artist,
                 )
+
+                if total_score >= HIGH_CONFIDENCE_THRESHOLD:
+                    break
 
         if best_match and best_match.confidence >= self._settings.min_confidence:
             self._state.save_matched_track(

@@ -96,6 +96,44 @@ class Settings(BaseSettings):
         description="Logging level",
     )
 
+    max_workers: int = Field(
+        default=4,
+        ge=1,
+        le=10,
+        description="Maximum concurrent workers for release processing",
+    )
+
+    artist_weight: float = Field(
+        default=0.45,
+        ge=0.0,
+        le=1.0,
+        description="Weight for artist score in matching",
+    )
+    title_weight: float = Field(
+        default=0.35,
+        ge=0.0,
+        le=1.0,
+        description="Weight for title score in matching",
+    )
+    verified_weight: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=1.0,
+        description="Weight for verified artist bonus",
+    )
+    popularity_weight: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=1.0,
+        description="Weight for popularity score",
+    )
+    version_match_bonus: float = Field(
+        default=0.10,
+        ge=0.0,
+        le=0.2,
+        description="Bonus for matching remix/version info",
+    )
+
     @property
     def db_path(self) -> Path:
         """Path to the SQLite database file."""

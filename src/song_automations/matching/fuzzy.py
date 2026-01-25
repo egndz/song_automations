@@ -298,6 +298,33 @@ def normalize_popularity(value: int, max_value: int = 100) -> float:
     return min(1.0, max(0.0, value / max_value))
 
 
+def calculate_version_bonus(parsed_track: ParsedTrack, candidate_title: str) -> float:
+    """Calculate bonus for matching version/remix info.
+
+    Args:
+        parsed_track: Parsed source track.
+        candidate_title: Candidate track title.
+
+    Returns:
+        1.0 if version info matches, 0.0 otherwise.
+    """
+    if not parsed_track.version:
+        return 0.0
+
+    candidate_lower = candidate_title.lower()
+    version_lower = parsed_track.version.lower()
+
+    if version_lower in candidate_lower:
+        return 1.0
+
+    if parsed_track.remixer:
+        remixer_lower = parsed_track.remixer.lower()
+        if remixer_lower in candidate_lower:
+            return 1.0
+
+    return 0.0
+
+
 def score_candidate(
     parsed_track: ParsedTrack,
     candidate_title: str,
@@ -305,10 +332,11 @@ def score_candidate(
     is_verified: bool,
     popularity: int,
     max_popularity: int = 100,
-    artist_weight: float = 0.40,
-    title_weight: float = 0.30,
-    verified_weight: float = 0.20,
+    artist_weight: float = 0.45,
+    title_weight: float = 0.35,
+    verified_weight: float = 0.10,
     popularity_weight: float = 0.10,
+    version_bonus_weight: float = 0.0,
 ) -> tuple[float, float, float, float, float]:
     """Score a candidate track against a source track.
 
@@ -323,6 +351,7 @@ def score_candidate(
         title_weight: Weight for title score component.
         verified_weight: Weight for verified bonus.
         popularity_weight: Weight for popularity score.
+        version_bonus_weight: Weight for version/remix matching bonus.
 
     Returns:
         Tuple of (total_score, artist_score, title_score, verified_bonus, popularity_score).
@@ -335,11 +364,14 @@ def score_candidate(
 
     popularity_score = normalize_popularity(popularity, max_popularity)
 
+    version_bonus = calculate_version_bonus(parsed_track, candidate_title)
+
     total_score = (
         artist_score * artist_weight
         + title_score * title_weight
         + verified_bonus * verified_weight
         + popularity_score * popularity_weight
+        + version_bonus * version_bonus_weight
     )
 
     return total_score, artist_score, title_score, verified_bonus, popularity_score
