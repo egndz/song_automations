@@ -1,14 +1,31 @@
 """SQLite-based state tracking for sync operations."""
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 Destination = Literal["spotify", "soundcloud"]
+EventType = Literal[
+    "sync_start",
+    "sync_complete",
+    "folder_start",
+    "folder_complete",
+    "track_matched",
+    "track_flagged",
+    "track_missing",
+    "playlist_created",
+    "playlist_updated",
+    "playlist_deleted",
+    "api_error",
+    "rate_limit",
+    "exception",
+]
+LogStatus = Literal["info", "success", "warning", "error"]
 
 
 @dataclass
@@ -80,6 +97,76 @@ class MissingTrack:
     track_name: str
     destination: str
     searched_at: datetime
+
+
+@dataclass
+class SyncLog:
+    """Represents a sync event log entry.
+
+    Args:
+        id: Database row ID.
+        sync_id: UUID identifying the sync run.
+        destination: Target platform.
+        folder_id: Discogs folder ID (optional).
+        folder_name: Discogs folder name (optional).
+        event_type: Type of event.
+        status: Event status (info, success, warning, error).
+        track_artist: Track artist (optional).
+        track_name: Track name (optional).
+        track_confidence: Match confidence score (optional).
+        message: Human-readable message.
+        details: Additional JSON details.
+        created_at: When the event occurred.
+    """
+
+    id: int
+    sync_id: str
+    destination: str
+    folder_id: int | None
+    folder_name: str | None
+    event_type: str
+    status: str
+    track_artist: str | None
+    track_name: str | None
+    track_confidence: float | None
+    message: str | None
+    details: dict[str, Any] | None
+    created_at: datetime
+
+
+@dataclass
+class SyncSummary:
+    """Aggregate statistics for a sync run.
+
+    Args:
+        sync_id: UUID identifying the sync run.
+        destination: Target platform.
+        started_at: When the sync started.
+        completed_at: When the sync completed.
+        total_events: Total number of events.
+        success_count: Number of successful events.
+        warning_count: Number of warning events.
+        error_count: Number of error events.
+        tracks_matched: Number of tracks matched.
+        tracks_flagged: Number of tracks flagged for review.
+        tracks_missing: Number of tracks not found.
+        playlists_created: Number of playlists created.
+        folders_processed: Number of folders processed.
+    """
+
+    sync_id: str
+    destination: str
+    started_at: datetime | None
+    completed_at: datetime | None
+    total_events: int
+    success_count: int
+    warning_count: int
+    error_count: int
+    tracks_matched: int
+    tracks_flagged: int
+    tracks_missing: int
+    playlists_created: int
+    folders_processed: int
 
 
 class StateTracker:
@@ -164,6 +251,30 @@ class StateTracker:
                     ON matched_tracks(discogs_release_id, discogs_track_position, destination);
                 CREATE INDEX IF NOT EXISTS idx_folder_releases_folder
                     ON folder_releases(discogs_folder_id);
+
+                CREATE TABLE IF NOT EXISTS sync_logs (
+                    id INTEGER PRIMARY KEY,
+                    sync_id TEXT NOT NULL,
+                    destination TEXT NOT NULL,
+                    folder_id INTEGER,
+                    folder_name TEXT,
+                    event_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    track_artist TEXT,
+                    track_name TEXT,
+                    track_confidence REAL,
+                    message TEXT,
+                    details TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_sync_logs_sync
+                    ON sync_logs(sync_id);
+                CREATE INDEX IF NOT EXISTS idx_sync_logs_status
+                    ON sync_logs(status);
+                CREATE INDEX IF NOT EXISTS idx_sync_logs_created
+                    ON sync_logs(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_sync_logs_destination
+                    ON sync_logs(destination);
             """
             )
             self._migrate_review_status(conn)
@@ -689,3 +800,254 @@ class StateTracker:
                 """,
                 (destination_track_id, match_confidence, track_id),
             )
+
+    def log_sync_event(
+        self,
+        sync_id: str,
+        destination: Destination,
+        event_type: EventType,
+        status: LogStatus,
+        folder_id: int | None = None,
+        folder_name: str | None = None,
+        track_artist: str | None = None,
+        track_name: str | None = None,
+        track_confidence: float | None = None,
+        message: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        """Log a sync event.
+
+        Args:
+            sync_id: UUID identifying the sync run.
+            destination: Target platform.
+            event_type: Type of event.
+            status: Event status.
+            folder_id: Discogs folder ID (optional).
+            folder_name: Discogs folder name (optional).
+            track_artist: Track artist (optional).
+            track_name: Track name (optional).
+            track_confidence: Match confidence score (optional).
+            message: Human-readable message (optional).
+            details: Additional JSON details (optional).
+        """
+        details_json = json.dumps(details) if details else None
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO sync_logs
+                (sync_id, destination, folder_id, folder_name, event_type, status,
+                 track_artist, track_name, track_confidence, message, details)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sync_id,
+                    destination,
+                    folder_id,
+                    folder_name,
+                    event_type,
+                    status,
+                    track_artist,
+                    track_name,
+                    track_confidence,
+                    message,
+                    details_json,
+                ),
+            )
+
+    def get_sync_logs(
+        self,
+        destination: Destination | None = None,
+        status: LogStatus | None = None,
+        sync_id: str | None = None,
+        event_type: EventType | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[SyncLog]:
+        """Get sync logs with optional filtering.
+
+        Args:
+            destination: Filter by destination platform.
+            status: Filter by event status.
+            sync_id: Filter by sync run ID.
+            event_type: Filter by event type.
+            limit: Maximum number of records to return.
+            offset: Number of records to skip.
+
+        Returns:
+            List of SyncLog objects.
+        """
+        query = "SELECT * FROM sync_logs WHERE 1=1"
+        params: list[Any] = []
+
+        if destination:
+            query += " AND destination = ?"
+            params.append(destination)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if sync_id:
+            query += " AND sync_id = ?"
+            params.append(sync_id)
+        if event_type:
+            query += " AND event_type = ?"
+            params.append(event_type)
+
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        with self._get_connection() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+            return [
+                SyncLog(
+                    id=row["id"],
+                    sync_id=row["sync_id"],
+                    destination=row["destination"],
+                    folder_id=row["folder_id"],
+                    folder_name=row["folder_name"],
+                    event_type=row["event_type"],
+                    status=row["status"],
+                    track_artist=row["track_artist"],
+                    track_name=row["track_name"],
+                    track_confidence=row["track_confidence"],
+                    message=row["message"],
+                    details=json.loads(row["details"]) if row["details"] else None,
+                    created_at=datetime.fromisoformat(row["created_at"]),
+                )
+                for row in rows
+            ]
+
+    def get_sync_log_count(
+        self,
+        destination: Destination | None = None,
+        status: LogStatus | None = None,
+        sync_id: str | None = None,
+        event_type: EventType | None = None,
+    ) -> int:
+        """Get count of sync logs matching filters.
+
+        Args:
+            destination: Filter by destination platform.
+            status: Filter by event status.
+            sync_id: Filter by sync run ID.
+            event_type: Filter by event type.
+
+        Returns:
+            Count of matching log entries.
+        """
+        query = "SELECT COUNT(*) FROM sync_logs WHERE 1=1"
+        params: list[Any] = []
+
+        if destination:
+            query += " AND destination = ?"
+            params.append(destination)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if sync_id:
+            query += " AND sync_id = ?"
+            params.append(sync_id)
+        if event_type:
+            query += " AND event_type = ?"
+            params.append(event_type)
+
+        with self._get_connection() as conn:
+            result = conn.execute(query, params).fetchone()
+            return result[0] if result else 0
+
+    def get_sync_summary(self, sync_id: str) -> SyncSummary | None:
+        """Get aggregate statistics for a sync run.
+
+        Args:
+            sync_id: UUID identifying the sync run.
+
+        Returns:
+            SyncSummary with aggregate stats, or None if no logs found.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    sync_id,
+                    destination,
+                    MIN(created_at) as started_at,
+                    MAX(created_at) as completed_at,
+                    COUNT(*) as total_events,
+                    SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success_count,
+                    SUM(CASE WHEN status = 'warning' THEN 1 ELSE 0 END) as warning_count,
+                    SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) as error_count,
+                    SUM(CASE WHEN event_type = 'track_matched' THEN 1 ELSE 0 END) as tracks_matched,
+                    SUM(CASE WHEN event_type = 'track_flagged' THEN 1 ELSE 0 END) as tracks_flagged,
+                    SUM(CASE WHEN event_type = 'track_missing' THEN 1 ELSE 0 END) as tracks_missing,
+                    SUM(CASE WHEN event_type = 'playlist_created' THEN 1 ELSE 0 END) as playlists_created,
+                    COUNT(DISTINCT folder_id) as folders_processed
+                FROM sync_logs
+                WHERE sync_id = ?
+                GROUP BY sync_id, destination
+                """,
+                (sync_id,),
+            ).fetchone()
+
+            if row is None:
+                return None
+
+            return SyncSummary(
+                sync_id=row["sync_id"],
+                destination=row["destination"],
+                started_at=datetime.fromisoformat(row["started_at"]) if row["started_at"] else None,
+                completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
+                total_events=row["total_events"],
+                success_count=row["success_count"],
+                warning_count=row["warning_count"],
+                error_count=row["error_count"],
+                tracks_matched=row["tracks_matched"],
+                tracks_flagged=row["tracks_flagged"],
+                tracks_missing=row["tracks_missing"],
+                playlists_created=row["playlists_created"],
+                folders_processed=row["folders_processed"],
+            )
+
+    def get_recent_sync_ids(self, limit: int = 20) -> list[tuple[str, str, datetime]]:
+        """Get recent sync run IDs with their destination and start time.
+
+        Args:
+            limit: Maximum number of sync IDs to return.
+
+        Returns:
+            List of (sync_id, destination, started_at) tuples.
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT sync_id, destination, MIN(created_at) as started_at
+                FROM sync_logs
+                GROUP BY sync_id
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+
+            return [
+                (row["sync_id"], row["destination"], datetime.fromisoformat(row["started_at"]))
+                for row in rows
+            ]
+
+    def cleanup_old_logs(self, days: int = 90) -> int:
+        """Remove logs older than the specified number of days.
+
+        Args:
+            days: Number of days to retain logs.
+
+        Returns:
+            Number of records deleted.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                """
+                DELETE FROM sync_logs
+                WHERE created_at < datetime('now', ?)
+                """,
+                (f"-{days} days",),
+            )
+            return cursor.rowcount

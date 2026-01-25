@@ -561,7 +561,13 @@
 <body>
     <div class="container">
         <header>
-            <h1>Review Track Matches</h1>
+            <div style="display: flex; align-items: center; gap: 20px;">
+                <h1>Review Track Matches</h1>
+                <div style="display: flex; gap: 10px;">
+                    <a href="/" style="color: #fff; text-decoration: none; padding: 8px 16px; border-radius: 8px; background: #1db954; font-size: 0.9rem;">Review</a>
+                    <a href="/logs" style="color: #aaa; text-decoration: none; padding: 8px 16px; border-radius: 8px; background: #252547; font-size: 0.9rem; transition: all 0.2s;" onmouseover="this.style.background='#333'; this.style.color='#fff';" onmouseout="this.style.background='#252547'; this.style.color='#aaa';">Logs</a>
+                </div>
+            </div>
             <div class="stats">
                 <div class="stat">
                     <div class="stat-number">{{ stats.total }}</div>

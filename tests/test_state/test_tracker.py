@@ -9,6 +9,8 @@ from song_automations.state.tracker import (
     MatchedTrack,
     MissingTrack,
     StateTracker,
+    SyncLog,
+    SyncSummary,
 )
 
 
@@ -466,3 +468,385 @@ class TestStateTrackerDatabaseInit:
 
         assert mapping is not None
         assert mapping.discogs_folder_name == "Test"
+
+
+class TestSyncLog:
+    """Tests for SyncLog dataclass."""
+
+    @pytest.mark.parametrize(
+        "event_type,status",
+        [
+            ("sync_start", "info"),
+            ("track_matched", "success"),
+            ("track_missing", "warning"),
+            ("exception", "error"),
+        ],
+    )
+    def test_sync_log_properties(self, event_type, status):
+        """SyncLog should store properties correctly."""
+        log = SyncLog(
+            id=1,
+            sync_id="abc-123",
+            destination="spotify",
+            folder_id=42,
+            folder_name="Electronic",
+            event_type=event_type,
+            status=status,
+            track_artist="Test Artist",
+            track_name="Test Track",
+            track_confidence=0.85,
+            message="Test message",
+            details={"key": "value"},
+            created_at=datetime.now(),
+        )
+        assert log.event_type == event_type
+        assert log.status == status
+        assert log.destination == "spotify"
+
+
+class TestSyncSummary:
+    """Tests for SyncSummary dataclass."""
+
+    def test_sync_summary_properties(self):
+        """SyncSummary should store aggregate stats correctly."""
+        summary = SyncSummary(
+            sync_id="abc-123",
+            destination="spotify",
+            started_at=datetime.now(),
+            completed_at=datetime.now(),
+            total_events=100,
+            success_count=80,
+            warning_count=15,
+            error_count=5,
+            tracks_matched=75,
+            tracks_flagged=10,
+            tracks_missing=15,
+            playlists_created=3,
+            folders_processed=5,
+        )
+        assert summary.total_events == 100
+        assert summary.success_count == 80
+        assert summary.error_count == 5
+
+
+class TestStateTrackerSyncLogs:
+    """Tests for StateTracker sync log operations."""
+
+    @pytest.fixture
+    def tracker(self, tmp_path):
+        """Create a StateTracker with a temporary database."""
+        db_path = tmp_path / "test_state.db"
+        return StateTracker(db_path)
+
+    def test_log_sync_event_creates_entry(self, tracker):
+        """Should create log entries."""
+        tracker.log_sync_event(
+            sync_id="test-sync-id",
+            destination="spotify",
+            event_type="sync_start",
+            status="info",
+            message="Test sync started",
+        )
+
+        logs = tracker.get_sync_logs()
+        assert len(logs) == 1
+        assert logs[0].sync_id == "test-sync-id"
+        assert logs[0].event_type == "sync_start"
+        assert logs[0].status == "info"
+
+    @pytest.mark.parametrize(
+        "event_type,status,track_confidence",
+        [
+            ("track_matched", "success", 0.95),
+            ("track_flagged", "warning", 0.45),
+            ("track_missing", "warning", 0.20),
+            ("exception", "error", None),
+        ],
+    )
+    def test_log_sync_event_with_track_info(
+        self, tracker, event_type, status, track_confidence
+    ):
+        """Should log track information correctly."""
+        tracker.log_sync_event(
+            sync_id="test-sync-id",
+            destination="spotify",
+            event_type=event_type,
+            status=status,
+            folder_id=123,
+            folder_name="Electronic",
+            track_artist="Test Artist",
+            track_name="Test Track",
+            track_confidence=track_confidence,
+            message=f"Test {event_type}",
+        )
+
+        logs = tracker.get_sync_logs()
+        assert len(logs) == 1
+        assert logs[0].event_type == event_type
+        assert logs[0].track_artist == "Test Artist"
+        assert logs[0].track_confidence == track_confidence
+
+    def test_log_sync_event_with_details(self, tracker):
+        """Should store JSON details correctly."""
+        details = {
+            "error": "Connection timeout",
+            "traceback": "Traceback (most recent call last)...",
+            "retry_count": 3,
+        }
+        tracker.log_sync_event(
+            sync_id="test-sync-id",
+            destination="spotify",
+            event_type="exception",
+            status="error",
+            message="API error",
+            details=details,
+        )
+
+        logs = tracker.get_sync_logs()
+        assert len(logs) == 1
+        assert logs[0].details == details
+        assert logs[0].details["retry_count"] == 3
+
+    def test_get_sync_logs_filters_by_destination(self, tracker):
+        """Should filter logs by destination."""
+        tracker.log_sync_event(
+            sync_id="sync-1",
+            destination="spotify",
+            event_type="sync_start",
+            status="info",
+        )
+        tracker.log_sync_event(
+            sync_id="sync-2",
+            destination="soundcloud",
+            event_type="sync_start",
+            status="info",
+        )
+
+        spotify_logs = tracker.get_sync_logs(destination="spotify")
+        soundcloud_logs = tracker.get_sync_logs(destination="soundcloud")
+        all_logs = tracker.get_sync_logs()
+
+        assert len(spotify_logs) == 1
+        assert len(soundcloud_logs) == 1
+        assert len(all_logs) == 2
+
+    def test_get_sync_logs_filters_by_status(self, tracker):
+        """Should filter logs by status."""
+        tracker.log_sync_event(
+            sync_id="sync-1",
+            destination="spotify",
+            event_type="track_matched",
+            status="success",
+        )
+        tracker.log_sync_event(
+            sync_id="sync-1",
+            destination="spotify",
+            event_type="track_missing",
+            status="warning",
+        )
+        tracker.log_sync_event(
+            sync_id="sync-1",
+            destination="spotify",
+            event_type="exception",
+            status="error",
+        )
+
+        success_logs = tracker.get_sync_logs(status="success")
+        warning_logs = tracker.get_sync_logs(status="warning")
+        error_logs = tracker.get_sync_logs(status="error")
+
+        assert len(success_logs) == 1
+        assert len(warning_logs) == 1
+        assert len(error_logs) == 1
+
+    def test_get_sync_logs_filters_by_sync_id(self, tracker):
+        """Should filter logs by sync run ID."""
+        for i in range(3):
+            tracker.log_sync_event(
+                sync_id="sync-1",
+                destination="spotify",
+                event_type="track_matched",
+                status="success",
+            )
+        for i in range(2):
+            tracker.log_sync_event(
+                sync_id="sync-2",
+                destination="spotify",
+                event_type="track_matched",
+                status="success",
+            )
+
+        sync1_logs = tracker.get_sync_logs(sync_id="sync-1")
+        sync2_logs = tracker.get_sync_logs(sync_id="sync-2")
+
+        assert len(sync1_logs) == 3
+        assert len(sync2_logs) == 2
+
+    def test_get_sync_logs_pagination(self, tracker):
+        """Should paginate logs correctly."""
+        for i in range(25):
+            tracker.log_sync_event(
+                sync_id="sync-1",
+                destination="spotify",
+                event_type="track_matched",
+                status="success",
+                message=f"Track {i}",
+            )
+
+        page1 = tracker.get_sync_logs(limit=10, offset=0)
+        page2 = tracker.get_sync_logs(limit=10, offset=10)
+        page3 = tracker.get_sync_logs(limit=10, offset=20)
+
+        assert len(page1) == 10
+        assert len(page2) == 10
+        assert len(page3) == 5
+
+    def test_get_sync_log_count(self, tracker):
+        """Should count logs with filters."""
+        for _ in range(5):
+            tracker.log_sync_event(
+                sync_id="sync-1",
+                destination="spotify",
+                event_type="track_matched",
+                status="success",
+            )
+        for _ in range(3):
+            tracker.log_sync_event(
+                sync_id="sync-1",
+                destination="spotify",
+                event_type="track_missing",
+                status="warning",
+            )
+
+        total = tracker.get_sync_log_count()
+        success_count = tracker.get_sync_log_count(status="success")
+        warning_count = tracker.get_sync_log_count(status="warning")
+
+        assert total == 8
+        assert success_count == 5
+        assert warning_count == 3
+
+    def test_get_sync_summary(self, tracker):
+        """Should calculate aggregate stats for sync run."""
+        sync_id = "test-sync-123"
+
+        tracker.log_sync_event(
+            sync_id=sync_id,
+            destination="spotify",
+            event_type="sync_start",
+            status="info",
+        )
+        for i in range(10):
+            tracker.log_sync_event(
+                sync_id=sync_id,
+                destination="spotify",
+                folder_id=i % 3,
+                event_type="track_matched",
+                status="success",
+            )
+        for i in range(3):
+            tracker.log_sync_event(
+                sync_id=sync_id,
+                destination="spotify",
+                folder_id=i,
+                event_type="track_flagged",
+                status="warning",
+            )
+        for i in range(2):
+            tracker.log_sync_event(
+                sync_id=sync_id,
+                destination="spotify",
+                folder_id=i,
+                event_type="track_missing",
+                status="warning",
+            )
+        tracker.log_sync_event(
+            sync_id=sync_id,
+            destination="spotify",
+            folder_id=0,
+            event_type="playlist_created",
+            status="success",
+        )
+        tracker.log_sync_event(
+            sync_id=sync_id,
+            destination="spotify",
+            event_type="sync_complete",
+            status="info",
+        )
+
+        summary = tracker.get_sync_summary(sync_id)
+
+        assert summary is not None
+        assert summary.sync_id == sync_id
+        assert summary.destination == "spotify"
+        assert summary.total_events == 18
+        assert summary.success_count == 11
+        assert summary.warning_count == 5
+        assert summary.tracks_matched == 10
+        assert summary.tracks_flagged == 3
+        assert summary.tracks_missing == 2
+        assert summary.playlists_created == 1
+        assert summary.folders_processed == 3
+
+    def test_get_sync_summary_nonexistent_returns_none(self, tracker):
+        """Should return None for nonexistent sync ID."""
+        summary = tracker.get_sync_summary("nonexistent-sync-id")
+        assert summary is None
+
+    def test_get_recent_sync_ids(self, tracker):
+        """Should get recent sync IDs with timestamps."""
+        tracker.log_sync_event(
+            sync_id="sync-1",
+            destination="spotify",
+            event_type="sync_start",
+            status="info",
+        )
+        tracker.log_sync_event(
+            sync_id="sync-2",
+            destination="soundcloud",
+            event_type="sync_start",
+            status="info",
+        )
+
+        recent = tracker.get_recent_sync_ids(limit=10)
+
+        assert len(recent) == 2
+        sync_ids = [r[0] for r in recent]
+        assert "sync-1" in sync_ids
+        assert "sync-2" in sync_ids
+
+    def test_cleanup_old_logs(self, tracker):
+        """Should delete logs older than specified days."""
+        tracker.log_sync_event(
+            sync_id="sync-1",
+            destination="spotify",
+            event_type="sync_start",
+            status="info",
+        )
+
+        deleted = tracker.cleanup_old_logs(days=0)
+
+        assert deleted == 0
+
+        deleted = tracker.cleanup_old_logs(days=1)
+
+        assert deleted == 0
+
+    def test_cleanup_old_logs_returns_count(self, tracker):
+        """Should return count of deleted records."""
+        for i in range(5):
+            tracker.log_sync_event(
+                sync_id=f"sync-{i}",
+                destination="spotify",
+                event_type="sync_start",
+                status="info",
+            )
+
+        initial_count = tracker.get_sync_log_count()
+        assert initial_count == 5
+
+        deleted = tracker.cleanup_old_logs(days=365)
+        assert deleted == 0
+
+        final_count = tracker.get_sync_log_count()
+        assert final_count == 5

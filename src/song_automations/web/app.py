@@ -16,6 +16,7 @@ from song_automations.matching.fuzzy import parse_track_title, score_candidate
 from song_automations.state.tracker import StateTracker
 
 ITEMS_PER_PAGE = 10
+LOGS_PER_PAGE = 50
 
 
 def extract_track_id(url: str, platform: str) -> str | None:
@@ -341,5 +342,86 @@ def create_app() -> FastAPI:
         tracker.update_review_status(track_id, "approved")
 
         return RedirectResponse(url="/", status_code=303)
+
+    @app.get("/logs", response_class=HTMLResponse)
+    async def logs_page(
+        request: Request,
+        destination: str | None = None,
+        status: str | None = None,
+        sync_id: str | None = None,
+        page: int = Query(1, ge=1),
+    ):
+        """Display sync logs with filtering and pagination."""
+        dest_filter = destination if destination in ("spotify", "soundcloud") else None
+        status_filter = status if status in ("info", "success", "warning", "error") else None
+
+        total_count = tracker.get_sync_log_count(
+            destination=dest_filter,
+            status=status_filter,
+            sync_id=sync_id,
+        )
+        total_pages = max(1, (total_count + LOGS_PER_PAGE - 1) // LOGS_PER_PAGE)
+        page = min(page, total_pages)
+
+        logs = tracker.get_sync_logs(
+            destination=dest_filter,
+            status=status_filter,
+            sync_id=sync_id,
+            limit=LOGS_PER_PAGE,
+            offset=(page - 1) * LOGS_PER_PAGE,
+        )
+
+        recent_syncs = tracker.get_recent_sync_ids(limit=20)
+
+        sync_summary = None
+        if sync_id:
+            sync_summary = tracker.get_sync_summary(sync_id)
+
+        status_counts = {
+            "all": tracker.get_sync_log_count(destination=dest_filter, sync_id=sync_id),
+            "error": tracker.get_sync_log_count(destination=dest_filter, status="error", sync_id=sync_id),
+            "warning": tracker.get_sync_log_count(destination=dest_filter, status="warning", sync_id=sync_id),
+            "success": tracker.get_sync_log_count(destination=dest_filter, status="success", sync_id=sync_id),
+        }
+
+        return templates.TemplateResponse(
+            "logs.html",
+            {
+                "request": request,
+                "logs": logs,
+                "recent_syncs": recent_syncs,
+                "sync_summary": sync_summary,
+                "status_counts": status_counts,
+                "destination_filter": destination,
+                "status_filter": status,
+                "sync_id_filter": sync_id,
+                "page": page,
+                "total_pages": total_pages,
+                "total_count": total_count,
+            },
+        )
+
+    @app.get("/logs/{log_id}")
+    async def get_log_details(log_id: int):
+        """Get log entry details as JSON."""
+        logs = tracker.get_sync_logs(limit=1, offset=0)
+        for log in logs:
+            if log.id == log_id:
+                return {
+                    "id": log.id,
+                    "sync_id": log.sync_id,
+                    "destination": log.destination,
+                    "folder_id": log.folder_id,
+                    "folder_name": log.folder_name,
+                    "event_type": log.event_type,
+                    "status": log.status,
+                    "track_artist": log.track_artist,
+                    "track_name": log.track_name,
+                    "track_confidence": log.track_confidence,
+                    "message": log.message,
+                    "details": log.details,
+                    "created_at": log.created_at.isoformat(),
+                }
+        raise HTTPException(status_code=404, detail="Log not found")
 
     return app

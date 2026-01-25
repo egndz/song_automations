@@ -1,6 +1,8 @@
 """Core sync engine for playlist synchronization."""
 
 import math
+import traceback
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -190,53 +192,93 @@ class SyncEngine:
             SyncResult with operation details.
         """
         result = SyncResult()
+        sync_id = str(uuid.uuid4())
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            console=self._console,
-        ) as progress:
-            task = progress.add_task("Fetching Discogs folders...", total=None)
+        try:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=self._console,
+            ) as progress:
+                task = progress.add_task("Fetching Discogs folders...", total=None)
 
-            folders = self._discogs.get_folders()
-            if folder_names:
-                folders = [f for f in folders if f.name in folder_names]
+                folders = self._discogs.get_folders()
+                if folder_names:
+                    folders = [f for f in folders if f.name in folder_names]
 
-            if include_wantlist:
-                folders.append(
-                    Folder(
-                        id=DiscogsClient.WANTLIST_FOLDER_ID,
-                        name=DiscogsClient.WANTLIST_FOLDER_NAME,
-                        count=0,
+                if include_wantlist:
+                    folders.append(
+                        Folder(
+                            id=DiscogsClient.WANTLIST_FOLDER_ID,
+                            name=DiscogsClient.WANTLIST_FOLDER_NAME,
+                            count=0,
+                        )
                     )
+
+                self._state.log_sync_event(
+                    sync_id=sync_id,
+                    destination=destination,
+                    event_type="sync_start",
+                    status="info",
+                    message=f"Starting sync to {destination} with {len(folders)} folders",
+                    details={"folder_count": len(folders), "dry_run": dry_run},
                 )
 
-            progress.update(task, description=f"Processing {len(folders)} folders...")
+                progress.update(task, description=f"Processing {len(folders)} folders...")
 
-            for folder in folders:
-                folder_result = self._sync_folder(
-                    folder=folder,
+                for folder in folders:
+                    folder_result = self._sync_folder(
+                        folder=folder,
+                        playlist_client=playlist_client,
+                        destination=destination,
+                        dry_run=dry_run,
+                        progress=progress,
+                        sync_id=sync_id,
+                    )
+                    result.operations.extend(folder_result.operations)
+                    result.playlists_created += folder_result.playlists_created
+                    result.tracks_added += folder_result.tracks_added
+                    result.tracks_removed += folder_result.tracks_removed
+                    result.tracks_missing += folder_result.tracks_missing
+                    result.tracks_flagged += folder_result.tracks_flagged
+
+                progress.update(task, description="Checking for deleted folders...")
+                deleted_result = self._cleanup_deleted_folders(
                     playlist_client=playlist_client,
                     destination=destination,
+                    current_folder_ids={f.id for f in folders},
                     dry_run=dry_run,
-                    progress=progress,
+                    sync_id=sync_id,
                 )
-                result.operations.extend(folder_result.operations)
-                result.playlists_created += folder_result.playlists_created
-                result.tracks_added += folder_result.tracks_added
-                result.tracks_removed += folder_result.tracks_removed
-                result.tracks_missing += folder_result.tracks_missing
-                result.tracks_flagged += folder_result.tracks_flagged
+                result.operations.extend(deleted_result.operations)
+                result.playlists_deleted += deleted_result.playlists_deleted
 
-            progress.update(task, description="Checking for deleted folders...")
-            deleted_result = self._cleanup_deleted_folders(
-                playlist_client=playlist_client,
+            self._state.log_sync_event(
+                sync_id=sync_id,
                 destination=destination,
-                current_folder_ids={f.id for f in folders},
-                dry_run=dry_run,
+                event_type="sync_complete",
+                status="info",
+                message=f"Sync completed: {result.tracks_added} added, {result.tracks_missing} missing",
+                details={
+                    "playlists_created": result.playlists_created,
+                    "playlists_deleted": result.playlists_deleted,
+                    "tracks_added": result.tracks_added,
+                    "tracks_removed": result.tracks_removed,
+                    "tracks_missing": result.tracks_missing,
+                    "tracks_flagged": result.tracks_flagged,
+                },
             )
-            result.operations.extend(deleted_result.operations)
-            result.playlists_deleted += deleted_result.playlists_deleted
+
+        except Exception as e:
+            self._state.log_sync_event(
+                sync_id=sync_id,
+                destination=destination,
+                event_type="exception",
+                status="error",
+                message=f"Sync failed: {str(e)}",
+                details={"error": str(e), "traceback": traceback.format_exc()},
+            )
+            raise
 
         return result
 
@@ -247,6 +289,7 @@ class SyncEngine:
         destination: Destination,
         dry_run: bool,
         progress: Progress,
+        sync_id: str,
     ) -> SyncResult:
         """Sync a single folder to a playlist.
 
@@ -256,6 +299,7 @@ class SyncEngine:
             destination: Target platform.
             dry_run: If True, don't make changes.
             progress: Progress bar.
+            sync_id: UUID identifying the sync run.
 
         Returns:
             SyncResult for this folder.
@@ -269,6 +313,17 @@ class SyncEngine:
             releases = list(self._discogs.get_wantlist_releases())
         else:
             releases = list(self._discogs.get_folder_releases(folder.id))
+
+        self._state.log_sync_event(
+            sync_id=sync_id,
+            destination=destination,
+            folder_id=folder.id,
+            folder_name=folder.name,
+            event_type="folder_start",
+            status="info",
+            message=f"Processing folder '{folder.name}' with {len(releases)} releases",
+            details={"release_count": len(releases)},
+        )
 
         if not releases:
             progress.console.print("  [dim]No releases in folder[/dim]")
@@ -300,6 +355,16 @@ class SyncEngine:
                     playlist_id=str(playlist.id),
                     playlist_name=playlist_name,
                 )
+                self._state.log_sync_event(
+                    sync_id=sync_id,
+                    destination=destination,
+                    folder_id=folder.id,
+                    folder_name=folder.name,
+                    event_type="playlist_created",
+                    status="success",
+                    message=f"Created playlist '{playlist_name}'",
+                    details={"playlist_id": str(playlist.id)},
+                )
             result.playlists_created += 1
 
         desired_track_ids: set[str] = set()
@@ -320,6 +385,7 @@ class SyncEngine:
                     playlist_client=playlist_client,
                     destination=destination,
                     folder_id=folder.id,
+                    sync_id=sync_id,
                 )
 
                 if match_result:
@@ -443,6 +509,7 @@ class SyncEngine:
         playlist_client: PlaylistClient,
         destination: Destination,
         folder_id: int,
+        sync_id: str,
     ) -> MatchResult | None:
         """Find a matching track on the target platform.
 
@@ -452,6 +519,7 @@ class SyncEngine:
             playlist_client: Platform client.
             destination: Target platform.
             folder_id: Discogs folder ID.
+            sync_id: UUID identifying the sync run.
 
         Returns:
             MatchResult if found, None otherwise.
@@ -489,6 +557,17 @@ class SyncEngine:
                 destination=destination,
                 destination_track_id=None,
                 match_confidence=0.0,
+            )
+            self._state.log_sync_event(
+                sync_id=sync_id,
+                destination=destination,
+                folder_id=folder_id,
+                event_type="track_missing",
+                status="warning",
+                track_artist=track.artist,
+                track_name=track.title,
+                message=f"No search results for '{track.artist} - {track.title}'",
+                details={"search_query": parsed.search_query, "release_id": release.id},
             )
             return None
 
@@ -565,6 +644,38 @@ class SyncEngine:
                 destination_track_id=str(best_match.track_id),
                 match_confidence=best_match.confidence,
             )
+
+            is_flagged = best_match.confidence < self._settings.high_confidence
+            if is_flagged:
+                self._state.log_sync_event(
+                    sync_id=sync_id,
+                    destination=destination,
+                    folder_id=folder_id,
+                    event_type="track_flagged",
+                    status="warning",
+                    track_artist=track.artist,
+                    track_name=track.title,
+                    track_confidence=best_match.confidence,
+                    message=f"Low confidence match: '{best_match.matched_artist} - {best_match.matched_title}'",
+                    details={
+                        "matched_track_id": str(best_match.track_id),
+                        "artist_score": best_match.artist_score,
+                        "title_score": best_match.title_score,
+                    },
+                )
+            else:
+                self._state.log_sync_event(
+                    sync_id=sync_id,
+                    destination=destination,
+                    folder_id=folder_id,
+                    event_type="track_matched",
+                    status="success",
+                    track_artist=track.artist,
+                    track_name=track.title,
+                    track_confidence=best_match.confidence,
+                    message=f"Matched to '{best_match.matched_artist} - {best_match.matched_title}'",
+                )
+
             return best_match
 
         self._state.save_matched_track(
@@ -575,6 +686,18 @@ class SyncEngine:
             destination=destination,
             destination_track_id=None,
             match_confidence=best_score,
+        )
+        self._state.log_sync_event(
+            sync_id=sync_id,
+            destination=destination,
+            folder_id=folder_id,
+            event_type="track_missing",
+            status="warning",
+            track_artist=track.artist,
+            track_name=track.title,
+            track_confidence=best_score,
+            message=f"Best match ({best_score:.0%}) below threshold ({self._settings.min_confidence:.0%})",
+            details={"best_score": best_score, "min_confidence": self._settings.min_confidence},
         )
         return None
 
@@ -618,6 +741,7 @@ class SyncEngine:
         destination: Destination,
         current_folder_ids: set[int],
         dry_run: bool,
+        sync_id: str,
     ) -> SyncResult:
         """Delete playlists for folders that no longer exist.
 
@@ -626,6 +750,7 @@ class SyncEngine:
             destination: Target platform.
             current_folder_ids: Set of current folder IDs.
             dry_run: If True, don't make changes.
+            sync_id: UUID identifying the sync run.
 
         Returns:
             SyncResult with deletion operations.
@@ -649,6 +774,15 @@ class SyncEngine:
                     if playlist:
                         playlist_client.delete_playlist(playlist.id)
                     self._state.delete_folder_mapping(mapping.discogs_folder_id, destination)
+                    self._state.log_sync_event(
+                        sync_id=sync_id,
+                        destination=destination,
+                        folder_id=mapping.discogs_folder_id,
+                        folder_name=mapping.discogs_folder_name,
+                        event_type="playlist_deleted",
+                        status="success",
+                        message=f"Deleted playlist '{mapping.playlist_name}' (folder no longer exists)",
+                    )
 
                 result.playlists_deleted += 1
 

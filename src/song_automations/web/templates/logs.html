@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Song Automations - Sync Logs</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0d0d1a;
+            color: #eee;
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #1a1a2e;
+            border-radius: 12px;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        h1 {
+            font-size: 1.6rem;
+            color: #fff;
+        }
+        .nav-links {
+            display: flex;
+            gap: 15px;
+        }
+        .nav-link {
+            color: #888;
+            text-decoration: none;
+            padding: 8px 16px;
+            border-radius: 8px;
+            background: #252547;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+        .nav-link:hover {
+            background: #333;
+            color: #fff;
+        }
+        .nav-link.active {
+            background: #1db954;
+            color: #fff;
+        }
+        .stats {
+            display: flex;
+            gap: 15px;
+        }
+        .stat {
+            background: #252547;
+            padding: 8px 16px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 1.3rem;
+            font-weight: bold;
+        }
+        .stat-number.error { color: #ff4757; }
+        .stat-number.warning { color: #feca57; }
+        .stat-number.success { color: #1db954; }
+        .stat-label {
+            font-size: 0.75rem;
+            color: #888;
+        }
+
+        .filters-row {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .filter-group {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+        .filter-label {
+            font-size: 0.85rem;
+            color: #888;
+        }
+        .filter-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+            background: #252547;
+            color: #aaa;
+        }
+        .filter-btn.active {
+            background: #1db954;
+            color: #fff;
+        }
+        .filter-btn:hover:not(.active) {
+            background: #333;
+        }
+        .filter-btn.error.active { background: #ff4757; }
+        .filter-btn.warning.active { background: #feca57; color: #333; }
+        .filter-btn.success.active { background: #1db954; }
+
+        .sync-select {
+            padding: 8px 12px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #1a1a2e;
+            color: #eee;
+            font-size: 0.85rem;
+            min-width: 200px;
+        }
+        .sync-select option {
+            background: #1a1a2e;
+        }
+
+        .summary-card {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 15px;
+        }
+        .summary-item {
+            text-align: center;
+        }
+        .summary-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #fff;
+        }
+        .summary-label {
+            font-size: 0.8rem;
+            color: #888;
+        }
+
+        .logs-table {
+            width: 100%;
+            border-collapse: collapse;
+            background: #1a1a2e;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .logs-table th {
+            text-align: left;
+            padding: 15px;
+            background: #252547;
+            color: #888;
+            font-weight: 600;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .logs-table td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #252547;
+            font-size: 0.9rem;
+        }
+        .logs-table tr:last-child td {
+            border-bottom: none;
+        }
+        .logs-table tr:hover {
+            background: #151528;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .status-badge.info { background: #3498db; color: #fff; }
+        .status-badge.success { background: #1db954; color: #fff; }
+        .status-badge.warning { background: #feca57; color: #333; }
+        .status-badge.error { background: #ff4757; color: #fff; }
+
+        .event-type {
+            font-family: monospace;
+            background: #252547;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+        }
+
+        .platform-badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .platform-spotify { background: #1db954; color: #fff; }
+        .platform-soundcloud { background: #ff5500; color: #fff; }
+
+        .confidence-bar {
+            width: 50px;
+            height: 6px;
+            background: #333;
+            border-radius: 3px;
+            overflow: hidden;
+            display: inline-block;
+            margin-right: 5px;
+        }
+        .confidence-fill {
+            height: 100%;
+            border-radius: 3px;
+        }
+        .confidence-fill.high { background: #1db954; }
+        .confidence-fill.medium { background: #feca57; }
+        .confidence-fill.low { background: #ff4757; }
+
+        .expand-btn {
+            background: none;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            padding: 5px;
+            font-size: 1.2rem;
+            transition: transform 0.2s;
+        }
+        .expand-btn:hover {
+            color: #fff;
+        }
+        .expand-btn.expanded {
+            transform: rotate(90deg);
+        }
+
+        .details-row {
+            display: none;
+            background: #151528;
+        }
+        .details-row.show {
+            display: table-row;
+        }
+        .details-content {
+            padding: 20px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            color: #ccc;
+            background: #0d0d1a;
+            border-radius: 8px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .timestamp {
+            color: #666;
+            font-size: 0.85rem;
+        }
+
+        .track-info {
+            max-width: 250px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .message-cell {
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin: 30px 0;
+        }
+        .page-btn {
+            padding: 10px 20px;
+            background: #252547;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+        .page-btn:hover:not(.disabled) {
+            background: #1db954;
+        }
+        .page-btn.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+        .page-info {
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 80px 20px;
+            background: #1a1a2e;
+            border-radius: 16px;
+        }
+        .empty-state h2 {
+            font-size: 1.5rem;
+            margin-bottom: 10px;
+            color: #888;
+        }
+        .empty-state p {
+            color: #666;
+            font-size: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-left">
+                <h1>Sync Logs</h1>
+                <div class="nav-links">
+                    <a href="/" class="nav-link">Review</a>
+                    <a href="/logs" class="nav-link active">Logs</a>
+                </div>
+            </div>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-number error">{{ status_counts.error }}</div>
+                    <div class="stat-label">Errors</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-number warning">{{ status_counts.warning }}</div>
+                    <div class="stat-label">Warnings</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-number success">{{ status_counts.success }}</div>
+                    <div class="stat-label">Success</div>
+                </div>
+            </div>
+        </header>
+
+        <div class="filters-row">
+            <div class="filter-group">
+                <span class="filter-label">Status:</span>
+                <a href="/logs?{% if destination_filter %}destination={{ destination_filter }}&{% endif %}{% if sync_id_filter %}sync_id={{ sync_id_filter }}{% endif %}"
+                   class="filter-btn {% if not status_filter %}active{% endif %}">All ({{ status_counts.all }})</a>
+                <a href="/logs?status=error{% if destination_filter %}&destination={{ destination_filter }}{% endif %}{% if sync_id_filter %}&sync_id={{ sync_id_filter }}{% endif %}"
+                   class="filter-btn error {% if status_filter == 'error' %}active{% endif %}">Errors ({{ status_counts.error }})</a>
+                <a href="/logs?status=warning{% if destination_filter %}&destination={{ destination_filter }}{% endif %}{% if sync_id_filter %}&sync_id={{ sync_id_filter }}{% endif %}"
+                   class="filter-btn warning {% if status_filter == 'warning' %}active{% endif %}">Warnings ({{ status_counts.warning }})</a>
+                <a href="/logs?status=success{% if destination_filter %}&destination={{ destination_filter }}{% endif %}{% if sync_id_filter %}&sync_id={{ sync_id_filter }}{% endif %}"
+                   class="filter-btn success {% if status_filter == 'success' %}active{% endif %}">Success ({{ status_counts.success }})</a>
+            </div>
+
+            <div class="filter-group">
+                <span class="filter-label">Platform:</span>
+                <a href="/logs?{% if status_filter %}status={{ status_filter }}&{% endif %}{% if sync_id_filter %}sync_id={{ sync_id_filter }}{% endif %}"
+                   class="filter-btn {% if not destination_filter %}active{% endif %}">All</a>
+                <a href="/logs?destination=spotify{% if status_filter %}&status={{ status_filter }}{% endif %}{% if sync_id_filter %}&sync_id={{ sync_id_filter }}{% endif %}"
+                   class="filter-btn {% if destination_filter == 'spotify' %}active{% endif %}">Spotify</a>
+                <a href="/logs?destination=soundcloud{% if status_filter %}&status={{ status_filter }}{% endif %}{% if sync_id_filter %}&sync_id={{ sync_id_filter }}{% endif %}"
+                   class="filter-btn {% if destination_filter == 'soundcloud' %}active{% endif %}">SoundCloud</a>
+            </div>
+
+            <div class="filter-group">
+                <span class="filter-label">Sync Run:</span>
+                <select class="sync-select" onchange="filterBySyncId(this.value)">
+                    <option value="">All Runs</option>
+                    {% for sync in recent_syncs %}
+                    <option value="{{ sync[0] }}" {% if sync_id_filter == sync[0] %}selected{% endif %}>
+                        {{ sync[2].strftime('%Y-%m-%d %H:%M') }} - {{ sync[1]|capitalize }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+        </div>
+
+        {% if sync_summary %}
+        <div class="summary-card">
+            <div class="summary-item">
+                <div class="summary-value">{{ sync_summary.destination|capitalize }}</div>
+                <div class="summary-label">Platform</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">{{ sync_summary.tracks_matched }}</div>
+                <div class="summary-label">Matched</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">{{ sync_summary.tracks_flagged }}</div>
+                <div class="summary-label">Flagged</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">{{ sync_summary.tracks_missing }}</div>
+                <div class="summary-label">Missing</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">{{ sync_summary.playlists_created }}</div>
+                <div class="summary-label">Playlists Created</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">{{ sync_summary.folders_processed }}</div>
+                <div class="summary-label">Folders</div>
+            </div>
+            <div class="summary-item">
+                <div class="summary-value">{{ sync_summary.error_count }}</div>
+                <div class="summary-label">Errors</div>
+            </div>
+        </div>
+        {% endif %}
+
+        {% if logs %}
+        <table class="logs-table">
+            <thead>
+                <tr>
+                    <th style="width: 30px;"></th>
+                    <th>Time</th>
+                    <th>Platform</th>
+                    <th>Event</th>
+                    <th>Status</th>
+                    <th>Folder</th>
+                    <th>Track</th>
+                    <th>Confidence</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for log in logs %}
+                <tr class="log-row" data-log-id="{{ log.id }}">
+                    <td>
+                        {% if log.details %}
+                        <button class="expand-btn" onclick="toggleDetails({{ log.id }})">+</button>
+                        {% endif %}
+                    </td>
+                    <td class="timestamp">{{ log.created_at.strftime('%H:%M:%S') }}</td>
+                    <td>
+                        <span class="platform-badge platform-{{ log.destination }}">{{ log.destination }}</span>
+                    </td>
+                    <td><span class="event-type">{{ log.event_type }}</span></td>
+                    <td><span class="status-badge {{ log.status }}">{{ log.status }}</span></td>
+                    <td>{{ log.folder_name or '-' }}</td>
+                    <td class="track-info">
+                        {% if log.track_artist and log.track_name %}
+                        {{ log.track_artist }} - {{ log.track_name }}
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if log.track_confidence is not none %}
+                        <div class="confidence-bar">
+                            <div class="confidence-fill {% if log.track_confidence >= 0.5 %}high{% elif log.track_confidence >= 0.35 %}medium{% else %}low{% endif %}"
+                                 style="width: {{ (log.track_confidence * 100)|int }}%"></div>
+                        </div>
+                        {{ (log.track_confidence * 100)|int }}%
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                    <td class="message-cell" title="{{ log.message or '' }}">{{ log.message or '-' }}</td>
+                </tr>
+                {% if log.details %}
+                <tr class="details-row" id="details-{{ log.id }}">
+                    <td colspan="9">
+                        <div class="details-content">{{ log.details | tojson(indent=2) }}</div>
+                    </td>
+                </tr>
+                {% endif %}
+                {% endfor %}
+            </tbody>
+        </table>
+
+        {% if total_pages > 1 %}
+        <div class="pagination">
+            {% set base_url = "/logs?" %}
+            {% if destination_filter %}{% set base_url = base_url ~ "destination=" ~ destination_filter ~ "&" %}{% endif %}
+            {% if status_filter %}{% set base_url = base_url ~ "status=" ~ status_filter ~ "&" %}{% endif %}
+            {% if sync_id_filter %}{% set base_url = base_url ~ "sync_id=" ~ sync_id_filter ~ "&" %}{% endif %}
+
+            {% if page > 1 %}
+            <a href="{{ base_url }}page={{ page - 1 }}" class="page-btn">Previous</a>
+            {% else %}
+            <span class="page-btn disabled">Previous</span>
+            {% endif %}
+
+            <span class="page-info">Page {{ page }} of {{ total_pages }} ({{ total_count }} logs)</span>
+
+            {% if page < total_pages %}
+            <a href="{{ base_url }}page={{ page + 1 }}" class="page-btn">Next</a>
+            {% else %}
+            <span class="page-btn disabled">Next</span>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% else %}
+        <div class="empty-state">
+            <h2>No Logs Found</h2>
+            <p>No sync logs match your current filters. Try adjusting the filters or run a sync first.</p>
+        </div>
+        {% endif %}
+    </div>
+
+    <script>
+        function toggleDetails(logId) {
+            const detailsRow = document.getElementById(`details-${logId}`);
+            const expandBtn = document.querySelector(`tr[data-log-id="${logId}"] .expand-btn`);
+
+            if (detailsRow.classList.contains('show')) {
+                detailsRow.classList.remove('show');
+                expandBtn.classList.remove('expanded');
+                expandBtn.textContent = '+';
+            } else {
+                detailsRow.classList.add('show');
+                expandBtn.classList.add('expanded');
+                expandBtn.textContent = '-';
+            }
+        }
+
+        function filterBySyncId(syncId) {
+            const url = new URL(window.location);
+            if (syncId) {
+                url.searchParams.set('sync_id', syncId);
+            } else {
+                url.searchParams.delete('sync_id');
+            }
+            url.searchParams.delete('page');
+            window.location = url.toString();
+        }
+    </script>
+</body>
+</html>
