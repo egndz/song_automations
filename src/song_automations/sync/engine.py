@@ -1,7 +1,6 @@
 """Core sync engine for playlist synchronization."""
 
 import math
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -305,23 +304,18 @@ class SyncEngine:
         desired_track_ids: set[str] = set()
         tracks_to_add: list[tuple[str, float, bool]] = []
 
-        def process_release(rel: Release) -> tuple[set[str], list, list, int, int]:
+        for release in releases:
             task = progress.add_task(
-                f"  Processing: {rel.artist} - {rel.title}",
+                f"  Processing: {release.artist} - {release.title}",
                 total=None,
             )
-            local_ids: set[str] = set()
-            local_adds: list[tuple[str, float, bool]] = []
-            local_ops: list[SyncOperation] = []
-            local_missing = 0
-            local_flagged = 0
 
-            tracks = self._discogs.get_release_tracks(rel.id)
+            tracks = self._discogs.get_release_tracks(release.id)
 
             for track in tracks:
                 match_result = self._find_track_match(
                     track=track,
-                    release=rel,
+                    release=release,
                     playlist_client=playlist_client,
                     destination=destination,
                     folder_id=folder.id,
@@ -329,12 +323,12 @@ class SyncEngine:
 
                 if match_result:
                     track_id = str(match_result.track_id)
-                    local_ids.add(track_id)
+                    desired_track_ids.add(track_id)
 
                     flagged = match_result.confidence < self._settings.high_confidence
-                    local_adds.append((track_id, match_result.confidence, flagged))
+                    tracks_to_add.append((track_id, match_result.confidence, flagged))
 
-                    local_ops.append(
+                    result.operations.append(
                         SyncOperation(
                             operation_type=OperationType.ADD_TRACK,
                             folder_name=folder.name,
@@ -347,11 +341,11 @@ class SyncEngine:
                     )
 
                     if flagged:
-                        local_flagged += 1
+                        result.tracks_flagged += 1
                 else:
-                    local_missing += 1
+                    result.tracks_missing += 1
                     self._state.save_missing_track(
-                        discogs_release_id=rel.id,
+                        discogs_release_id=release.id,
                         discogs_folder_id=folder.id,
                         artist=track.artist,
                         track_name=track.title,
@@ -359,17 +353,6 @@ class SyncEngine:
                     )
 
             progress.remove_task(task)
-            return local_ids, local_adds, local_ops, local_missing, local_flagged
-
-        with ThreadPoolExecutor(max_workers=self._settings.max_workers) as executor:
-            futures = [executor.submit(process_release, rel) for rel in releases]
-            for future in as_completed(futures):
-                ids, adds, ops, missing, flagged = future.result()
-                desired_track_ids.update(ids)
-                tracks_to_add.extend(adds)
-                result.operations.extend(ops)
-                result.tracks_missing += missing
-                result.tracks_flagged += flagged
 
         if playlist and not dry_run:
             current_tracks = playlist_client.get_playlist_tracks(playlist.id)
