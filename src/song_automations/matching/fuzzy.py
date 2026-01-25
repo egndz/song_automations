@@ -325,6 +325,81 @@ def calculate_version_bonus(parsed_track: ParsedTrack, candidate_title: str) -> 
     return 0.0
 
 
+def calculate_version_score(parsed_track: ParsedTrack, candidate_title: str) -> float:
+    """Calculate version match score with penalty for mismatches.
+
+    This function distinguishes between three scenarios:
+    - Source and candidate have matching versions -> bonus (+1.0)
+    - Source has no version (original) -> neutral (0.0)
+    - Source has version but candidate appears to be original -> penalty (-1.0)
+
+    Args:
+        parsed_track: Parsed source track with version info.
+        candidate_title: Candidate track title to compare.
+
+    Returns:
+        1.0 if version matches, 0.0 if source is original, -1.0 if version mismatch.
+    """
+    if not parsed_track.version:
+        return 0.0
+
+    candidate_lower = candidate_title.lower()
+    version_lower = parsed_track.version.lower()
+
+    if version_lower in candidate_lower:
+        return 1.0
+
+    if parsed_track.remixer:
+        remixer_lower = parsed_track.remixer.lower()
+        if remixer_lower in candidate_lower:
+            return 1.0
+
+    version_keywords = ["remix", "mix", "edit", "dub", "version", "rework", "bootleg", "vip"]
+    candidate_has_version = any(kw in candidate_lower for kw in version_keywords)
+
+    if candidate_has_version:
+        return 0.0
+
+    if parsed_track.version_type in (VersionType.REMIX, VersionType.DUB, VersionType.EDIT):
+        return -1.0
+
+    return 0.0
+
+
+def calculate_label_bonus(
+    source_label: str,
+    candidate_artist: str,
+    candidate_title: str,
+) -> float:
+    """Check if label name appears in candidate metadata.
+
+    Electronic labels often upload tracks with the label name in the title
+    or as the artist name (e.g., "Kompakt - Track" or artist "Drumcode").
+
+    Args:
+        source_label: Label name from the Discogs release.
+        candidate_artist: Candidate artist name.
+        candidate_title: Candidate track title.
+
+    Returns:
+        1.0 if label found in artist or title, 0.0 otherwise.
+    """
+    if not source_label:
+        return 0.0
+
+    label_lower = source_label.lower().strip()
+    if len(label_lower) < 3:
+        return 0.0
+
+    candidate_artist_lower = candidate_artist.lower()
+    candidate_title_lower = candidate_title.lower()
+
+    if label_lower in candidate_artist_lower or label_lower in candidate_title_lower:
+        return 1.0
+
+    return 0.0
+
+
 def score_candidate(
     parsed_track: ParsedTrack,
     candidate_title: str,
@@ -337,6 +412,9 @@ def score_candidate(
     verified_weight: float = 0.10,
     popularity_weight: float = 0.10,
     version_bonus_weight: float = 0.0,
+    version_penalty_weight: float = 0.15,
+    label: str = "",
+    label_bonus_weight: float = 0.10,
 ) -> tuple[float, float, float, float, float]:
     """Score a candidate track against a source track.
 
@@ -352,6 +430,9 @@ def score_candidate(
         verified_weight: Weight for verified bonus.
         popularity_weight: Weight for popularity score.
         version_bonus_weight: Weight for version/remix matching bonus.
+        version_penalty_weight: Weight for version mismatch penalty.
+        label: Source release label name for label matching bonus.
+        label_bonus_weight: Weight for label name appearing in candidate.
 
     Returns:
         Tuple of (total_score, artist_score, title_score, verified_bonus, popularity_score).
@@ -366,13 +447,21 @@ def score_candidate(
 
     version_bonus = calculate_version_bonus(parsed_track, candidate_title)
 
+    version_score = calculate_version_score(parsed_track, candidate_title)
+
+    label_bonus = calculate_label_bonus(label, candidate_artist, candidate_title)
+
     total_score = (
         artist_score * artist_weight
         + title_score * title_weight
         + verified_bonus * verified_weight
         + popularity_score * popularity_weight
         + version_bonus * version_bonus_weight
+        + label_bonus * label_bonus_weight
     )
+
+    if version_score < 0:
+        total_score += version_score * version_penalty_weight
 
     return total_score, artist_score, title_score, verified_bonus, popularity_score
 

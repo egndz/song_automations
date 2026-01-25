@@ -5,7 +5,9 @@ import pytest
 from song_automations.matching.fuzzy import (
     VersionType,
     calculate_artist_score,
+    calculate_label_bonus,
     calculate_title_score,
+    calculate_version_score,
     normalize_artist,
     normalize_text,
     parse_track_title,
@@ -372,3 +374,132 @@ class TestScoreCandidate:
 
         assert pop_high > pop_low
         assert total_high > total_low
+
+
+class TestCalculateVersionScore:
+    """Tests for version score with penalty for mismatches."""
+
+    @pytest.mark.parametrize(
+        "title,candidate,expected",
+        [
+            ("Track (Hardfloor Remix)", "Track (Hardfloor Remix)", 1.0),
+            ("Track (Hardfloor Remix)", "Track - Hardfloor Remix", 1.0),
+            ("Track", "Track", 0.0),
+            ("Track", "Track (Original Mix)", 0.0),
+            ("Track (Hardfloor Remix)", "Track", -1.0),
+            ("Track (DJ Dub)", "Track", -1.0),
+            ("Track (Artist Edit)", "Track", -1.0),
+            ("Track (Hardfloor Remix)", "Track (Other Remix)", 0.0),
+            ("Track (Extended Mix)", "Track", 0.0),
+        ],
+    )
+    def test_version_score(self, title: str, candidate: str, expected: float) -> None:
+        """Test version score returns correct values for different scenarios."""
+        parsed = parse_track_title(title, "Artist")
+        assert calculate_version_score(parsed, candidate) == expected
+
+    def test_version_penalty_applied_in_scoring(self) -> None:
+        """Test that version penalty reduces total score."""
+        parsed_remix = parse_track_title("Track (DJ Remix)", "Artist")
+
+        score_with_match, _, _, _, _ = score_candidate(
+            parsed_track=parsed_remix,
+            candidate_title="Track (DJ Remix)",
+            candidate_artist="Artist",
+            is_verified=False,
+            popularity=50,
+            max_popularity=100,
+            version_penalty_weight=0.15,
+        )
+
+        score_with_mismatch, _, _, _, _ = score_candidate(
+            parsed_track=parsed_remix,
+            candidate_title="Track",
+            candidate_artist="Artist",
+            is_verified=False,
+            popularity=50,
+            max_popularity=100,
+            version_penalty_weight=0.15,
+        )
+
+        assert score_with_mismatch < score_with_match
+
+    def test_version_penalty_weight_configurable(self) -> None:
+        """Test that version penalty weight is configurable."""
+        parsed_remix = parse_track_title("Track (DJ Remix)", "Artist")
+
+        score_low_penalty, _, _, _, _ = score_candidate(
+            parsed_track=parsed_remix,
+            candidate_title="Track",
+            candidate_artist="Artist",
+            is_verified=False,
+            popularity=50,
+            max_popularity=100,
+            version_penalty_weight=0.05,
+        )
+
+        score_high_penalty, _, _, _, _ = score_candidate(
+            parsed_track=parsed_remix,
+            candidate_title="Track",
+            candidate_artist="Artist",
+            is_verified=False,
+            popularity=50,
+            max_popularity=100,
+            version_penalty_weight=0.25,
+        )
+
+        assert score_low_penalty > score_high_penalty
+
+
+class TestCalculateLabelBonus:
+    """Tests for label matching bonus."""
+
+    @pytest.mark.parametrize(
+        "label,artist,title,expected",
+        [
+            ("Kompakt", "Kompakt", "Track Title", 1.0),
+            ("Drumcode", "Adam Beyer", "Drumcode - Track", 1.0),
+            ("Kompakt", "Michael Mayer", "Track Title", 0.0),
+            ("", "Artist", "Track", 0.0),
+            ("AB", "Artist", "Track", 0.0),
+            ("Innervisions", "Innervisions Records", "Track", 1.0),
+        ],
+    )
+    def test_label_bonus(
+        self, label: str, artist: str, title: str, expected: float
+    ) -> None:
+        """Test label bonus returns correct values."""
+        assert calculate_label_bonus(label, artist, title) == expected
+
+    def test_label_bonus_applied_in_scoring(self) -> None:
+        """Test that label bonus increases total score."""
+        parsed = parse_track_title("Track", "Artist")
+
+        score_without_label, _, _, _, _ = score_candidate(
+            parsed_track=parsed,
+            candidate_title="Track",
+            candidate_artist="Artist",
+            is_verified=False,
+            popularity=50,
+            max_popularity=100,
+            label="",
+            label_bonus_weight=0.10,
+        )
+
+        score_with_label, _, _, _, _ = score_candidate(
+            parsed_track=parsed,
+            candidate_title="Track",
+            candidate_artist="Artist",
+            is_verified=False,
+            popularity=50,
+            max_popularity=100,
+            label="Artist",
+            label_bonus_weight=0.10,
+        )
+
+        assert score_with_label > score_without_label
+
+    def test_label_bonus_case_insensitive(self) -> None:
+        """Test that label matching is case insensitive."""
+        assert calculate_label_bonus("KOMPAKT", "kompakt records", "Track") == 1.0
+        assert calculate_label_bonus("drumcode", "DRUMCODE", "Track") == 1.0
