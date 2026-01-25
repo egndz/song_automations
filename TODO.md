@@ -89,13 +89,16 @@ Trackable checklist for song_automations improvements.
 
 ## Phase 9: SoundCloud Matching Fix (CRITICAL)
 
-- [ ] Investigate SoundCloud search API response format
-- [ ] Verify track parsing extracts correct fields (title vs name)
-- [ ] Compare scoring for same track on Spotify vs SoundCloud
-- [ ] Check if search query formatting differs for SoundCloud
-- [ ] Fix any discrepancies found
+- [x] Investigate SoundCloud search API response format
+- [x] Verify track parsing extracts correct fields (title vs name)
+- [x] Compare scoring for same track on Spotify vs SoundCloud
+- [x] Check if search query formatting differs for SoundCloud
+- [x] Fix any discrepancies found
+  - Fixed popularity: use log10 scaling instead of raw playback_count/1M
+  - Fixed verified: disabled for SoundCloud (unreliable flag)
+  - Fixed artist: use publisher_metadata.artist when available
 
-**Files:** `soundcloud.py`, `engine.py`, `fuzzy.py`
+**Files:** `soundcloud.py`, `engine.py`
 
 ---
 

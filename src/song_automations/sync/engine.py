@@ -1,5 +1,6 @@
 """Core sync engine for playlist synchronization."""
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -455,17 +456,20 @@ class SyncEngine:
                 candidate_artist = result_track.artist
                 popularity = result_track.popularity
                 max_pop = 100
+                is_verified = search_result.is_verified
             else:
                 candidate_title = result_track.title
                 candidate_artist = result_track.artist
-                popularity = result_track.playback_count
-                max_pop = 1000000
+                raw_plays = result_track.playback_count or 0
+                popularity = int(math.log10(raw_plays + 1) / 6 * 100)
+                max_pop = 100
+                is_verified = False
 
             total_score, artist_score, title_score, verified_bonus, pop_score = score_candidate(
                 parsed_track=parsed,
                 candidate_title=candidate_title,
                 candidate_artist=candidate_artist,
-                is_verified=search_result.is_verified,
+                is_verified=is_verified,
                 popularity=popularity,
                 max_popularity=max_pop,
             )

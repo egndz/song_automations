@@ -503,11 +503,17 @@ class SoundCloudClient:
             Parsed SoundCloudTrack object.
         """
         user = item.get("user") or {}
+        publisher_metadata = item.get("publisher_metadata") or {}
+        artist = (
+            publisher_metadata.get("artist")
+            or user.get("username")
+            or "Unknown Artist"
+        )
         return SoundCloudTrack(
             id=item["id"],
             permalink_url=item.get("permalink_url", ""),
             title=item.get("title", ""),
-            artist=user.get("username", "Unknown Artist"),
+            artist=artist,
             playback_count=item.get("playback_count", 0) or 0,
             likes_count=item.get("likes_count", 0) or 0,
             duration_ms=item.get("duration", 0),
