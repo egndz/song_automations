@@ -18,10 +18,12 @@ Trackable checklist for song_automations improvements.
 
 ## Phase 2: SoundCloud Connection Pooling (CRITICAL)
 
-- [ ] Create persistent `httpx.Client` in `__init__` with connection limits
-- [ ] Add `close()` method and context manager protocol (`__enter__`/`__exit__`)
-- [ ] Replace all 8 `with httpx.Client()` calls with `self.http_client`
-- [ ] Implement token refresh using stored `refresh_token`
+- [x] Create persistent `httpx.Client` in `__init__` with connection limits
+- [x] Add `close()` method and context manager protocol (`__enter__`/`__exit__`)
+- [x] Replace all 8 `with httpx.Client()` calls with `self._http_client`
+- [x] Implement token refresh using stored `refresh_token`
+  - Added `_refresh_access_token()` method
+  - Added `_handle_auth_error()` for 401 retry logic
 
 **File:** `soundcloud.py`
 
