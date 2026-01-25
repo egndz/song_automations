@@ -1,7 +1,7 @@
 """Discogs API client for fetching collection and wantlist data."""
 
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator
 
 import discogs_client
 

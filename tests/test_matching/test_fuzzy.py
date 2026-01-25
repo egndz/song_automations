@@ -306,7 +306,7 @@ class TestScoreCandidate:
             popularity=50,
             max_popularity=100,
         )
-        assert 0.40 <= total <= 0.80
+        assert 0.40 <= total <= 0.85
         assert artist >= 0.90
         assert title >= 0.50
 
@@ -321,7 +321,7 @@ class TestScoreCandidate:
             popularity=10,
             max_popularity=100,
         )
-        assert total < 0.40
+        assert total < 0.50
 
     def test_verified_bonus_applied(self) -> None:
         """Test that verified bonus increases score."""

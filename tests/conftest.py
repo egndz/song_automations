@@ -16,5 +16,4 @@ def settings() -> Settings:
         soundcloud_client_secret="test_soundcloud_secret",
         min_confidence=0.30,
         high_confidence=0.50,
-        medium_confidence=0.30,
     )

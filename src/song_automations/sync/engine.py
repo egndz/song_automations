@@ -6,8 +6,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
 
-HIGH_CONFIDENCE_THRESHOLD = 0.95
-
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
@@ -20,6 +18,8 @@ from song_automations.matching.fuzzy import (
     should_use_fallback,
 )
 from song_automations.state.tracker import Destination, StateTracker
+
+HIGH_CONFIDENCE_THRESHOLD = 0.95
 
 
 class OperationType(Enum):
@@ -271,7 +271,7 @@ class SyncEngine:
             releases = list(self._discogs.get_folder_releases(folder.id))
 
         if not releases:
-            progress.console.print(f"  [dim]No releases in folder[/dim]")
+            progress.console.print("  [dim]No releases in folder[/dim]")
             return result
 
         mapping = self._state.get_folder_mapping(folder.id, destination)
@@ -305,18 +305,23 @@ class SyncEngine:
         desired_track_ids: set[str] = set()
         tracks_to_add: list[tuple[str, float, bool]] = []
 
-        for release in releases:
+        def process_release(rel: Release) -> tuple[set[str], list, list, int, int]:
             task = progress.add_task(
-                f"  Processing: {release.artist} - {release.title}",
+                f"  Processing: {rel.artist} - {rel.title}",
                 total=None,
             )
+            local_ids: set[str] = set()
+            local_adds: list[tuple[str, float, bool]] = []
+            local_ops: list[SyncOperation] = []
+            local_missing = 0
+            local_flagged = 0
 
-            tracks = self._discogs.get_release_tracks(release.id)
+            tracks = self._discogs.get_release_tracks(rel.id)
 
             for track in tracks:
                 match_result = self._find_track_match(
                     track=track,
-                    release=release,
+                    release=rel,
                     playlist_client=playlist_client,
                     destination=destination,
                     folder_id=folder.id,
@@ -324,13 +329,12 @@ class SyncEngine:
 
                 if match_result:
                     track_id = str(match_result.track_id)
-                    desired_track_ids.add(track_id)
+                    local_ids.add(track_id)
 
                     flagged = match_result.confidence < self._settings.high_confidence
+                    local_adds.append((track_id, match_result.confidence, flagged))
 
-                    tracks_to_add.append((track_id, match_result.confidence, flagged))
-
-                    result.operations.append(
+                    local_ops.append(
                         SyncOperation(
                             operation_type=OperationType.ADD_TRACK,
                             folder_name=folder.name,
@@ -343,11 +347,11 @@ class SyncEngine:
                     )
 
                     if flagged:
-                        result.tracks_flagged += 1
+                        local_flagged += 1
                 else:
-                    result.tracks_missing += 1
+                    local_missing += 1
                     self._state.save_missing_track(
-                        discogs_release_id=release.id,
+                        discogs_release_id=rel.id,
                         discogs_folder_id=folder.id,
                         artist=track.artist,
                         track_name=track.title,
@@ -355,6 +359,17 @@ class SyncEngine:
                     )
 
             progress.remove_task(task)
+            return local_ids, local_adds, local_ops, local_missing, local_flagged
+
+        with ThreadPoolExecutor(max_workers=self._settings.max_workers) as executor:
+            futures = [executor.submit(process_release, rel) for rel in releases]
+            for future in as_completed(futures):
+                ids, adds, ops, missing, flagged = future.result()
+                desired_track_ids.update(ids)
+                tracks_to_add.extend(adds)
+                result.operations.extend(ops)
+                result.tracks_missing += missing
+                result.tracks_flagged += flagged
 
         if playlist and not dry_run:
             current_tracks = playlist_client.get_playlist_tracks(playlist.id)

@@ -22,7 +22,7 @@ class Settings(BaseSettings):
         playlist_prefix: Prefix for created playlists.
         min_confidence: Minimum confidence threshold for track matching.
         high_confidence: Threshold for high confidence matches (auto-add).
-        medium_confidence: Threshold for medium confidence matches (add with flag).
+        log_level: Logging level for file output.
     """
 
     model_config = SettingsConfigDict(
@@ -84,13 +84,6 @@ class Settings(BaseSettings):
         le=1.0,
         description="High confidence threshold (auto-add)",
     )
-    medium_confidence: float = Field(
-        default=0.30,
-        ge=0.0,
-        le=1.0,
-        description="Medium confidence threshold (add with flag)",
-    )
-
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
         default="INFO",
         description="Logging level",
@@ -148,6 +141,11 @@ class Settings(BaseSettings):
     def reports_dir(self) -> Path:
         """Path to the reports directory."""
         return self.data_dir / "reports"
+
+    @property
+    def log_path(self) -> Path:
+        """Path to the log file."""
+        return self.data_dir / "song_automations.log"
 
     def ensure_directories(self) -> None:
         """Create necessary directories if they don't exist."""
