@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Song Automations - Review Matches</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #333;
+        }
+        h1 {
+            font-size: 1.8rem;
+            color: #fff;
+        }
+        .stats {
+            display: flex;
+            gap: 20px;
+        }
+        .stat {
+            background: #252547;
+            padding: 10px 20px;
+            border-radius: 8px;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #1db954;
+        }
+        .stat-label {
+            font-size: 0.8rem;
+            color: #888;
+        }
+        .filters {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        .filter-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+        .filter-btn.active {
+            background: #1db954;
+            color: #fff;
+        }
+        .filter-btn:not(.active) {
+            background: #333;
+            color: #aaa;
+        }
+        .filter-btn:hover:not(.active) {
+            background: #444;
+        }
+        .bulk-actions {
+            margin-bottom: 20px;
+        }
+        .bulk-btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            background: #1db954;
+            color: #fff;
+            transition: background 0.2s;
+        }
+        .bulk-btn:hover {
+            background: #1ed760;
+        }
+        .track-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .track-card {
+            background: #252547;
+            border-radius: 12px;
+            padding: 16px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .track-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+        .confidence {
+            min-width: 60px;
+            text-align: center;
+        }
+        .confidence-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+        .confidence-low {
+            background: #ff6b6b;
+            color: #fff;
+        }
+        .confidence-medium {
+            background: #feca57;
+            color: #333;
+        }
+        .track-info {
+            flex: 1;
+        }
+        .track-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+        .track-artist {
+            color: #888;
+            font-size: 0.9rem;
+        }
+        .track-meta {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .platform-badge {
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .platform-spotify {
+            background: #1db954;
+            color: #fff;
+        }
+        .platform-soundcloud {
+            background: #ff5500;
+            color: #fff;
+        }
+        .track-link {
+            color: #888;
+            text-decoration: none;
+            font-size: 0.85rem;
+        }
+        .track-link:hover {
+            color: #1db954;
+        }
+        .actions {
+            display: flex;
+            gap: 8px;
+        }
+        .action-btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        .btn-approve {
+            background: #1db954;
+            color: #fff;
+        }
+        .btn-approve:hover {
+            background: #1ed760;
+        }
+        .btn-reject {
+            background: #ff4757;
+            color: #fff;
+        }
+        .btn-reject:hover {
+            background: #ff6b7a;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+        .empty-state h2 {
+            font-size: 1.5rem;
+            margin-bottom: 10px;
+            color: #1db954;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Review Track Matches</h1>
+            <div class="stats">
+                <div class="stat">
+                    <div class="stat-number">{{ stats.total }}</div>
+                    <div class="stat-label">To Review</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-number">{{ stats.spotify }}</div>
+                    <div class="stat-label">Spotify</div>
+                </div>
+                <div class="stat">
+                    <div class="stat-number">{{ stats.soundcloud }}</div>
+                    <div class="stat-label">SoundCloud</div>
+                </div>
+            </div>
+        </header>
+
+        <div class="filters">
+            <a href="/" class="filter-btn {% if not destination_filter %}active{% endif %}">All</a>
+            <a href="/?destination=spotify" class="filter-btn {% if destination_filter == 'spotify' %}active{% endif %}">Spotify</a>
+            <a href="/?destination=soundcloud" class="filter-btn {% if destination_filter == 'soundcloud' %}active{% endif %}">SoundCloud</a>
+        </div>
+
+        {% if tracks %}
+        <div class="bulk-actions">
+            <form action="/approve-all{% if destination_filter %}?destination={{ destination_filter }}{% endif %}" method="post" style="display: inline;">
+                <button type="submit" class="bulk-btn">Approve All ({{ tracks|length }})</button>
+            </form>
+        </div>
+
+        <div class="track-list">
+            {% for track in tracks %}
+            <div class="track-card">
+                <div class="confidence">
+                    <span class="confidence-badge {% if track.match_confidence < 0.35 %}confidence-low{% else %}confidence-medium{% endif %}">
+                        {{ (track.match_confidence * 100)|int }}%
+                    </span>
+                </div>
+                <div class="track-info">
+                    <div class="track-title">{{ track.track_name }}</div>
+                    <div class="track-artist">{{ track.artist }}</div>
+                </div>
+                <div class="track-meta">
+                    <span class="platform-badge platform-{{ track.destination }}">{{ track.destination }}</span>
+                    {% if track.destination == 'spotify' and track.destination_track_id %}
+                    <a href="https://open.spotify.com/track/{{ track.destination_track_id }}" target="_blank" class="track-link">Open in Spotify</a>
+                    {% elif track.destination == 'soundcloud' and track.destination_track_id %}
+                    <a href="https://api.soundcloud.com/tracks/{{ track.destination_track_id }}" target="_blank" class="track-link">View Track</a>
+                    {% endif %}
+                </div>
+                <div class="actions">
+                    <form action="/approve/{{ track.id }}" method="post" style="display: inline;">
+                        <button type="submit" class="action-btn btn-approve">Approve</button>
+                    </form>
+                    <form action="/reject/{{ track.id }}" method="post" style="display: inline;">
+                        <button type="submit" class="action-btn btn-reject">Reject</button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="empty-state">
+            <h2>All Clear!</h2>
+            <p>No tracks need review. All matches are above the confidence threshold.</p>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>

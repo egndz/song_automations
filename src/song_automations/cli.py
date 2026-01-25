@@ -420,5 +420,42 @@ def _print_sync_result(result, dry_run: bool) -> None:
         )
 
 
+@app.command("review")
+def review(
+    port: Annotated[
+        int,
+        typer.Option(
+            "--port",
+            "-p",
+            help="Port to run the review server on.",
+        ),
+    ] = 8000,
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            "-h",
+            help="Host to bind the server to.",
+        ),
+    ] = "127.0.0.1",
+) -> None:
+    """Launch web UI to review flagged track matches."""
+    import uvicorn
+
+    from song_automations.web import create_app
+
+    settings = _init_settings()
+
+    if not settings.db_path.exists():
+        console.print("[yellow]No sync data found. Run a sync first.[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold green]Starting review server at http://{host}:{port}[/bold green]")
+    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    app_instance = create_app()
+    uvicorn.run(app_instance, host=host, port=port, log_level="warning")
+
+
 if __name__ == "__main__":
     app()

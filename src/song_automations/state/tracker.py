@@ -45,6 +45,8 @@ class MatchedTrack:
         destination_track_id: Platform-specific track ID (None if not found).
         match_confidence: Match confidence score.
         searched_at: When the search was performed.
+        review_status: Review status (pending, approved, rejected).
+        id: Database row ID.
     """
 
     discogs_release_id: int
@@ -55,6 +57,8 @@ class MatchedTrack:
     destination_track_id: str | None
     match_confidence: float
     searched_at: datetime
+    review_status: str = "pending"
+    id: int | None = None
 
 
 @dataclass
@@ -135,6 +139,7 @@ class StateTracker:
                     destination_track_id TEXT,
                     match_confidence REAL,
                     searched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    review_status TEXT DEFAULT 'pending',
                     UNIQUE(discogs_release_id, discogs_track_position, destination)
                 );
 
@@ -160,6 +165,16 @@ class StateTracker:
                 CREATE INDEX IF NOT EXISTS idx_folder_releases_folder
                     ON folder_releases(discogs_folder_id);
             """
+            )
+            self._migrate_review_status(conn)
+
+    def _migrate_review_status(self, conn: sqlite3.Connection) -> None:
+        """Add review_status column if it doesn't exist (migration)."""
+        cursor = conn.execute("PRAGMA table_info(matched_tracks)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "review_status" not in columns:
+            conn.execute(
+                "ALTER TABLE matched_tracks ADD COLUMN review_status TEXT DEFAULT 'pending'"
             )
 
     def get_folder_mapping(
@@ -515,3 +530,117 @@ class StateTracker:
             ).fetchall()
 
             return [row["destination_track_id"] for row in rows]
+
+    def get_flagged_tracks(
+        self,
+        high_confidence: float = 0.50,
+        destination: Destination | None = None,
+    ) -> list[MatchedTrack]:
+        """Get tracks that need review (confidence below threshold, not yet reviewed).
+
+        Args:
+            high_confidence: Threshold below which tracks are flagged.
+            destination: Optional filter by destination.
+
+        Returns:
+            List of MatchedTrack objects needing review.
+        """
+        with self._get_connection() as conn:
+            if destination:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM matched_tracks
+                    WHERE match_confidence < ?
+                    AND match_confidence > 0
+                    AND destination_track_id IS NOT NULL
+                    AND (review_status IS NULL OR review_status = 'pending')
+                    AND destination = ?
+                    ORDER BY match_confidence ASC
+                    """,
+                    (high_confidence, destination),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM matched_tracks
+                    WHERE match_confidence < ?
+                    AND match_confidence > 0
+                    AND destination_track_id IS NOT NULL
+                    AND (review_status IS NULL OR review_status = 'pending')
+                    ORDER BY match_confidence ASC
+                    """,
+                    (high_confidence,),
+                ).fetchall()
+
+            return [
+                MatchedTrack(
+                    id=row["id"],
+                    discogs_release_id=row["discogs_release_id"],
+                    discogs_track_position=row["discogs_track_position"],
+                    artist=row["artist"],
+                    track_name=row["track_name"],
+                    destination=row["destination"],
+                    destination_track_id=row["destination_track_id"],
+                    match_confidence=row["match_confidence"],
+                    searched_at=datetime.fromisoformat(row["searched_at"]),
+                    review_status=row["review_status"] or "pending",
+                )
+                for row in rows
+            ]
+
+    def get_matched_track_by_id(self, track_id: int) -> MatchedTrack | None:
+        """Get a matched track by its database ID.
+
+        Args:
+            track_id: Database row ID.
+
+        Returns:
+            MatchedTrack if found, None otherwise.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM matched_tracks WHERE id = ?",
+                (track_id,),
+            ).fetchone()
+
+            if row is None:
+                return None
+
+            return MatchedTrack(
+                id=row["id"],
+                discogs_release_id=row["discogs_release_id"],
+                discogs_track_position=row["discogs_track_position"],
+                artist=row["artist"],
+                track_name=row["track_name"],
+                destination=row["destination"],
+                destination_track_id=row["destination_track_id"],
+                match_confidence=row["match_confidence"],
+                searched_at=datetime.fromisoformat(row["searched_at"]),
+                review_status=row["review_status"] or "pending",
+            )
+
+    def update_review_status(
+        self,
+        track_id: int,
+        status: Literal["pending", "approved", "rejected"],
+    ) -> None:
+        """Update the review status of a matched track.
+
+        Args:
+            track_id: Database row ID.
+            status: New review status.
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                "UPDATE matched_tracks SET review_status = ? WHERE id = ?",
+                (status, track_id),
+            )
+
+    def delete_matched_track(self, track_id: int) -> None:
+        """Delete a matched track by its database ID.
+
+        Args:
+            track_id: Database row ID.
+        """
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM matched_tracks WHERE id = ?", (track_id,))
