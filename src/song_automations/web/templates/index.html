@@ -344,6 +344,88 @@
             color: #555;
             font-size: 0.8rem;
         }
+
+        .pagination {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 10px;
+            margin: 30px 0;
+        }
+        .page-btn {
+            padding: 10px 20px;
+            background: #252547;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+        .page-btn:hover:not(.disabled) {
+            background: #1db954;
+        }
+        .page-btn.disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+        .page-info {
+            color: #888;
+            font-size: 0.9rem;
+        }
+
+        .correction-form {
+            margin-top: 15px;
+            padding: 15px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+        .correction-form summary {
+            color: #888;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .correction-form summary:hover {
+            color: #1db954;
+        }
+        .correction-input {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .correction-input input {
+            flex: 1;
+            padding: 10px 15px;
+            border: 1px solid #333;
+            border-radius: 8px;
+            background: #0d0d1a;
+            color: #fff;
+            font-size: 0.9rem;
+        }
+        .correction-input input:focus {
+            outline: none;
+            border-color: #1db954;
+        }
+        .correction-input button {
+            padding: 10px 20px;
+            background: #1db954;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        .correction-input button:hover {
+            background: #1ed760;
+        }
+
+        .action-hint {
+            font-size: 0.75rem;
+            color: #666;
+            margin-top: 5px;
+        }
     </style>
 </head>
 <body>
@@ -394,12 +476,18 @@
                     </span>
                 </div>
                 <div class="actions">
-                    <form action="/approve/{{ track.id }}" method="post" style="display: inline;">
-                        <button type="submit" class="action-btn btn-approve">Approve</button>
-                    </form>
-                    <form action="/reject/{{ track.id }}" method="post" style="display: inline;">
-                        <button type="submit" class="action-btn btn-reject">Reject</button>
-                    </form>
+                    <div style="text-align: center;">
+                        <form action="/approve/{{ track.id }}" method="post" style="display: inline;">
+                            <button type="submit" class="action-btn btn-approve">Approve</button>
+                        </form>
+                        <div class="action-hint">Keep in playlist</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <form action="/reject/{{ track.id }}" method="post" style="display: inline;">
+                            <button type="submit" class="action-btn btn-reject">Reject</button>
+                        </form>
+                        <div class="action-hint">Remove on next sync</div>
+                    </div>
                 </div>
             </div>
 
@@ -506,10 +594,36 @@
                     {% if track.destination == 'spotify' and track.destination_track_id %}
                     <a href="https://open.spotify.com/track/{{ track.destination_track_id }}" target="_blank" class="external-link">Open in Spotify</a>
                     {% endif %}
+
+                    <details class="correction-form">
+                        <summary>Wrong track? Paste correct URL</summary>
+                        <form action="/correct/{{ track.id }}" method="post" class="correction-input">
+                            <input type="text" name="correct_url" placeholder="Paste {{ track.destination|capitalize }} URL or track ID..." required>
+                            <button type="submit">Fix</button>
+                        </form>
+                    </details>
                 </div>
             </div>
         </div>
         {% endfor %}
+
+        {% if total_pages > 1 %}
+        <div class="pagination">
+            {% if page > 1 %}
+            <a href="/?page={{ page - 1 }}{% if destination_filter %}&destination={{ destination_filter }}{% endif %}" class="page-btn">Previous</a>
+            {% else %}
+            <span class="page-btn disabled">Previous</span>
+            {% endif %}
+
+            <span class="page-info">Page {{ page }} of {{ total_pages }} ({{ total_items }} tracks)</span>
+
+            {% if page < total_pages %}
+            <a href="/?page={{ page + 1 }}{% if destination_filter %}&destination={{ destination_filter }}{% endif %}" class="page-btn">Next</a>
+            {% else %}
+            <span class="page-btn disabled">Next</span>
+            {% endif %}
+        </div>
+        {% endif %}
         {% else %}
         <div class="empty-state">
             <h2>All Clear!</h2>

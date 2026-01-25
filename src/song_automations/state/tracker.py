@@ -345,7 +345,7 @@ class StateTracker:
         destination: Destination,
         max_age_days: int = 30,
     ) -> MatchedTrack | None:
-        """Get a cached track match.
+        """Get a cached track match (excludes rejected tracks).
 
         Args:
             discogs_release_id: Discogs release ID.
@@ -354,7 +354,7 @@ class StateTracker:
             max_age_days: Maximum age of cache entry in days (default 30).
 
         Returns:
-            MatchedTrack if found and not expired, None otherwise.
+            MatchedTrack if found, not expired, and not rejected. None otherwise.
         """
         with self._get_connection() as conn:
             row = conn.execute(
@@ -364,6 +364,7 @@ class StateTracker:
                 AND discogs_track_position = ?
                 AND destination = ?
                 AND searched_at > datetime('now', ?)
+                AND (review_status IS NULL OR review_status != 'rejected')
                 """,
                 (discogs_release_id, track_position, destination, f"-{max_age_days} days"),
             ).fetchone()
@@ -372,6 +373,7 @@ class StateTracker:
                 return None
 
             return MatchedTrack(
+                id=row["id"],
                 discogs_release_id=row["discogs_release_id"],
                 discogs_track_position=row["discogs_track_position"],
                 artist=row["artist"],
@@ -380,6 +382,7 @@ class StateTracker:
                 destination_track_id=row["destination_track_id"],
                 match_confidence=row["match_confidence"],
                 searched_at=datetime.fromisoformat(row["searched_at"]),
+                review_status=row["review_status"] or "pending",
             )
 
     def save_matched_track(
@@ -644,3 +647,26 @@ class StateTracker:
         """
         with self._get_connection() as conn:
             conn.execute("DELETE FROM matched_tracks WHERE id = ?", (track_id,))
+
+    def update_matched_track(
+        self,
+        track_id: int,
+        destination_track_id: str,
+        match_confidence: float,
+    ) -> None:
+        """Update a matched track with corrected info.
+
+        Args:
+            track_id: Database row ID.
+            destination_track_id: New platform-specific track ID.
+            match_confidence: New match confidence score.
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE matched_tracks
+                SET destination_track_id = ?, match_confidence = ?, searched_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (destination_track_id, match_confidence, track_id),
+            )
