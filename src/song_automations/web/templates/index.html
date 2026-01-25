@@ -505,8 +505,6 @@
 
                     {% if track.destination == 'spotify' and track.destination_track_id %}
                     <a href="https://open.spotify.com/track/{{ track.destination_track_id }}" target="_blank" class="external-link">Open in Spotify</a>
-                    {% elif track.destination == 'soundcloud' and track.destination_track_id %}
-                    <a href="https://api.soundcloud.com/tracks/{{ track.destination_track_id }}" target="_blank" class="external-link">View on SoundCloud</a>
                     {% endif %}
                 </div>
             </div>
