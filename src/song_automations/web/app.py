@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from song_automations.clients.discogs import DiscogsClient
 from song_automations.config import get_settings
 from song_automations.state.tracker import StateTracker
 
@@ -25,6 +26,42 @@ def create_app() -> FastAPI:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     settings = get_settings()
     tracker = StateTracker(settings.db_path)
+    discogs = DiscogsClient(settings) if settings.discogs_user_token else None
+
+    release_cache: dict[int, dict] = {}
+
+    def get_release_info(release_id: int) -> dict | None:
+        """Fetch and cache Discogs release info."""
+        if release_id in release_cache:
+            return release_cache[release_id]
+
+        if not discogs:
+            return None
+
+        try:
+            release = discogs._client.release(release_id)
+            info = {
+                "id": release_id,
+                "title": release.title,
+                "artist": ", ".join(a.name for a in release.artists),
+                "year": release.year,
+                "thumb": release.thumb,
+                "images": [img["uri"] for img in (release.images or [])[:1]],
+                "labels": [{"name": lbl.name, "catno": lbl.data.get("catno", "")} for lbl in release.labels],
+                "genres": release.genres or [],
+                "styles": release.styles or [],
+                "country": release.country,
+                "format": ", ".join(f["name"] for f in (release.formats or [])),
+                "url": f"https://www.discogs.com/release/{release_id}",
+                "tracklist": [
+                    {"position": t.position, "title": t.title, "duration": t.duration}
+                    for t in release.tracklist
+                ],
+            }
+            release_cache[release_id] = info
+            return info
+        except Exception:
+            return None
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request, destination: str | None = None):
@@ -33,6 +70,14 @@ def create_app() -> FastAPI:
             high_confidence=settings.high_confidence,
             destination=destination,
         )
+
+        tracks_with_info = []
+        for track in flagged:
+            release_info = get_release_info(track.discogs_release_id)
+            tracks_with_info.append({
+                "track": track,
+                "release": release_info,
+            })
 
         stats = {
             "total": len(flagged),
@@ -44,7 +89,7 @@ def create_app() -> FastAPI:
             "index.html",
             {
                 "request": request,
-                "tracks": flagged,
+                "tracks_with_info": tracks_with_info,
                 "stats": stats,
                 "destination_filter": destination,
             },

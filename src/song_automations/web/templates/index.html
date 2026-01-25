@@ -12,50 +12,56 @@
         }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #1a1a2e;
+            background: #0d0d1a;
             color: #eee;
             min-height: 100vh;
-            padding: 20px;
         }
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
+            padding: 20px;
         }
         header {
             display: flex;
             justify-content: space-between;
             align-items: center;
             margin-bottom: 30px;
-            padding-bottom: 20px;
-            border-bottom: 1px solid #333;
+            padding: 20px;
+            background: #1a1a2e;
+            border-radius: 12px;
         }
         h1 {
-            font-size: 1.8rem;
+            font-size: 1.6rem;
             color: #fff;
         }
         .stats {
             display: flex;
-            gap: 20px;
+            gap: 15px;
         }
         .stat {
             background: #252547;
-            padding: 10px 20px;
+            padding: 8px 16px;
             border-radius: 8px;
             text-align: center;
         }
         .stat-number {
-            font-size: 1.5rem;
+            font-size: 1.3rem;
             font-weight: bold;
             color: #1db954;
         }
         .stat-label {
-            font-size: 0.8rem;
+            font-size: 0.75rem;
             color: #888;
+        }
+        .controls {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            align-items: center;
         }
         .filters {
             display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
+            gap: 8px;
         }
         .filter-btn {
             padding: 8px 16px;
@@ -63,7 +69,7 @@
             border-radius: 20px;
             cursor: pointer;
             text-decoration: none;
-            font-size: 0.9rem;
+            font-size: 0.85rem;
             transition: all 0.2s;
         }
         .filter-btn.active {
@@ -71,140 +77,272 @@
             color: #fff;
         }
         .filter-btn:not(.active) {
-            background: #333;
+            background: #252547;
             color: #aaa;
         }
         .filter-btn:hover:not(.active) {
-            background: #444;
-        }
-        .bulk-actions {
-            margin-bottom: 20px;
+            background: #333;
         }
         .bulk-btn {
             padding: 10px 20px;
             border: none;
-            border-radius: 6px;
+            border-radius: 8px;
             cursor: pointer;
             font-size: 0.9rem;
             background: #1db954;
             color: #fff;
-            transition: background 0.2s;
+            margin-left: auto;
         }
         .bulk-btn:hover {
             background: #1ed760;
         }
-        .track-list {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
+
         .track-card {
-            background: #252547;
-            border-radius: 12px;
-            padding: 16px 20px;
-            display: flex;
-            align-items: center;
-            gap: 20px;
+            background: #1a1a2e;
+            border-radius: 16px;
+            margin-bottom: 20px;
+            overflow: hidden;
             transition: transform 0.2s, box-shadow 0.2s;
         }
         .track-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.4);
         }
-        .confidence {
-            min-width: 60px;
-            text-align: center;
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            background: #252547;
+            border-bottom: 1px solid #333;
+        }
+        .confidence-section {
+            display: flex;
+            align-items: center;
+            gap: 15px;
         }
         .confidence-badge {
-            display: inline-block;
-            padding: 6px 12px;
+            padding: 8px 16px;
             border-radius: 20px;
             font-weight: bold;
-            font-size: 0.9rem;
+            font-size: 1rem;
         }
-        .confidence-low {
-            background: #ff6b6b;
-            color: #fff;
-        }
-        .confidence-medium {
-            background: #feca57;
-            color: #333;
-        }
-        .track-info {
-            flex: 1;
-        }
-        .track-title {
-            font-size: 1.1rem;
-            font-weight: 600;
-            margin-bottom: 4px;
-        }
-        .track-artist {
+        .confidence-low { background: #ff4757; color: #fff; }
+        .confidence-medium { background: #feca57; color: #333; }
+        .original-search {
             color: #888;
             font-size: 0.9rem;
         }
-        .track-meta {
+        .original-search strong {
+            color: #fff;
+        }
+        .actions {
             display: flex;
-            align-items: center;
             gap: 10px;
         }
-        .platform-badge {
-            padding: 4px 10px;
+        .action-btn {
+            padding: 10px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-approve { background: #1db954; color: #fff; }
+        .btn-approve:hover { background: #1ed760; transform: scale(1.05); }
+        .btn-reject { background: #ff4757; color: #fff; }
+        .btn-reject:hover { background: #ff6b7a; transform: scale(1.05); }
+
+        .card-body {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0;
+        }
+        .side {
+            padding: 20px;
+        }
+        .side-discogs {
+            background: #1a1a2e;
+            border-right: 1px solid #333;
+        }
+        .side-match {
+            background: #151528;
+        }
+        .side-title {
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #888;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .side-title .icon {
+            width: 20px;
+            height: 20px;
+        }
+
+        .release-info {
+            display: flex;
+            gap: 20px;
+        }
+        .release-artwork {
+            width: 150px;
+            height: 150px;
+            border-radius: 8px;
+            object-fit: cover;
+            background: #333;
+            flex-shrink: 0;
+        }
+        .release-details {
+            flex: 1;
+        }
+        .release-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+        .release-artist {
+            color: #1db954;
+            font-size: 1rem;
+            margin-bottom: 15px;
+        }
+        .release-meta {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 8px 15px;
+            font-size: 0.85rem;
+        }
+        .meta-label {
+            color: #666;
+        }
+        .meta-value {
+            color: #ccc;
+        }
+        .meta-value a {
+            color: #1db954;
+            text-decoration: none;
+        }
+        .meta-value a:hover {
+            text-decoration: underline;
+        }
+        .tags {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .tag {
+            background: #333;
+            padding: 3px 10px;
             border-radius: 12px;
             font-size: 0.75rem;
+            color: #aaa;
+        }
+
+        .tracklist {
+            margin-top: 15px;
+            background: #151528;
+            border-radius: 8px;
+            padding: 10px;
+            max-height: 120px;
+            overflow-y: auto;
+        }
+        .tracklist-item {
+            display: flex;
+            gap: 10px;
+            padding: 5px 0;
+            font-size: 0.85rem;
+            border-bottom: 1px solid #252547;
+        }
+        .tracklist-item:last-child {
+            border-bottom: none;
+        }
+        .tracklist-item.highlight {
+            background: rgba(29, 185, 84, 0.2);
+            margin: 0 -10px;
+            padding: 5px 10px;
+            border-radius: 4px;
+        }
+        .track-pos {
+            color: #666;
+            min-width: 30px;
+        }
+        .track-name {
+            flex: 1;
+            color: #ddd;
+        }
+        .track-dur {
+            color: #666;
+        }
+
+        .match-info {
+            text-align: center;
+        }
+        .match-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+        .match-artist {
+            color: #888;
+            margin-bottom: 20px;
+        }
+        .embed-container {
+            margin: 20px 0;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        .embed-container iframe {
+            border: none;
+            border-radius: 12px;
+        }
+        .platform-badge {
+            display: inline-block;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 0.8rem;
             font-weight: 600;
             text-transform: uppercase;
+            margin-bottom: 15px;
         }
-        .platform-spotify {
-            background: #1db954;
-            color: #fff;
-        }
-        .platform-soundcloud {
-            background: #ff5500;
-            color: #fff;
-        }
-        .track-link {
+        .platform-spotify { background: #1db954; color: #fff; }
+        .platform-soundcloud { background: #ff5500; color: #fff; }
+
+        .external-link {
+            display: inline-block;
+            margin-top: 15px;
             color: #888;
             text-decoration: none;
             font-size: 0.85rem;
         }
-        .track-link:hover {
+        .external-link:hover {
             color: #1db954;
         }
-        .actions {
-            display: flex;
-            gap: 8px;
-        }
-        .action-btn {
-            padding: 8px 16px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.85rem;
-            transition: all 0.2s;
-        }
-        .btn-approve {
-            background: #1db954;
-            color: #fff;
-        }
-        .btn-approve:hover {
-            background: #1ed760;
-        }
-        .btn-reject {
-            background: #ff4757;
-            color: #fff;
-        }
-        .btn-reject:hover {
-            background: #ff6b7a;
-        }
+
         .empty-state {
             text-align: center;
-            padding: 60px 20px;
-            color: #888;
+            padding: 80px 20px;
+            background: #1a1a2e;
+            border-radius: 16px;
         }
         .empty-state h2 {
-            font-size: 1.5rem;
+            font-size: 2rem;
             margin-bottom: 10px;
             color: #1db954;
+        }
+        .empty-state p {
+            color: #888;
+            font-size: 1.1rem;
+        }
+
+        .no-artwork {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #252547;
+            color: #555;
+            font-size: 0.8rem;
         }
     </style>
 </head>
@@ -228,38 +366,32 @@
             </div>
         </header>
 
-        <div class="filters">
-            <a href="/" class="filter-btn {% if not destination_filter %}active{% endif %}">All</a>
-            <a href="/?destination=spotify" class="filter-btn {% if destination_filter == 'spotify' %}active{% endif %}">Spotify</a>
-            <a href="/?destination=soundcloud" class="filter-btn {% if destination_filter == 'soundcloud' %}active{% endif %}">SoundCloud</a>
-        </div>
-
-        {% if tracks %}
-        <div class="bulk-actions">
-            <form action="/approve-all{% if destination_filter %}?destination={{ destination_filter }}{% endif %}" method="post" style="display: inline;">
-                <button type="submit" class="bulk-btn">Approve All ({{ tracks|length }})</button>
+        <div class="controls">
+            <div class="filters">
+                <a href="/" class="filter-btn {% if not destination_filter %}active{% endif %}">All</a>
+                <a href="/?destination=spotify" class="filter-btn {% if destination_filter == 'spotify' %}active{% endif %}">Spotify</a>
+                <a href="/?destination=soundcloud" class="filter-btn {% if destination_filter == 'soundcloud' %}active{% endif %}">SoundCloud</a>
+            </div>
+            {% if tracks_with_info %}
+            <form action="/approve-all{% if destination_filter %}?destination={{ destination_filter }}{% endif %}" method="post" style="margin-left: auto;">
+                <button type="submit" class="bulk-btn">Approve All ({{ tracks_with_info|length }})</button>
             </form>
+            {% endif %}
         </div>
 
-        <div class="track-list">
-            {% for track in tracks %}
-            <div class="track-card">
-                <div class="confidence">
+        {% if tracks_with_info %}
+        {% for item in tracks_with_info %}
+        {% set track = item.track %}
+        {% set release = item.release %}
+        <div class="track-card">
+            <div class="card-header">
+                <div class="confidence-section">
                     <span class="confidence-badge {% if track.match_confidence < 0.35 %}confidence-low{% else %}confidence-medium{% endif %}">
-                        {{ (track.match_confidence * 100)|int }}%
+                        {{ (track.match_confidence * 100)|int }}% Match
                     </span>
-                </div>
-                <div class="track-info">
-                    <div class="track-title">{{ track.track_name }}</div>
-                    <div class="track-artist">{{ track.artist }}</div>
-                </div>
-                <div class="track-meta">
-                    <span class="platform-badge platform-{{ track.destination }}">{{ track.destination }}</span>
-                    {% if track.destination == 'spotify' and track.destination_track_id %}
-                    <a href="https://open.spotify.com/track/{{ track.destination_track_id }}" target="_blank" class="track-link">Open in Spotify</a>
-                    {% elif track.destination == 'soundcloud' and track.destination_track_id %}
-                    <a href="https://api.soundcloud.com/tracks/{{ track.destination_track_id }}" target="_blank" class="track-link">View Track</a>
-                    {% endif %}
+                    <span class="original-search">
+                        Searching for: <strong>{{ track.artist }} - {{ track.track_name }}</strong>
+                    </span>
                 </div>
                 <div class="actions">
                     <form action="/approve/{{ track.id }}" method="post" style="display: inline;">
@@ -270,8 +402,116 @@
                     </form>
                 </div>
             </div>
-            {% endfor %}
+
+            <div class="card-body">
+                <div class="side side-discogs">
+                    <div class="side-title">
+                        <svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2" fill="none"/><circle cx="12" cy="12" r="3"/></svg>
+                        Discogs Source
+                    </div>
+                    {% if release %}
+                    <div class="release-info">
+                        {% if release.images %}
+                        <img src="{{ release.images[0] }}" alt="Album art" class="release-artwork">
+                        {% elif release.thumb %}
+                        <img src="{{ release.thumb }}" alt="Album art" class="release-artwork">
+                        {% else %}
+                        <div class="release-artwork no-artwork">No Image</div>
+                        {% endif %}
+                        <div class="release-details">
+                            <div class="release-title">{{ release.title }}</div>
+                            <div class="release-artist">{{ release.artist }}</div>
+                            <div class="release-meta">
+                                {% if release.labels %}
+                                <span class="meta-label">Label</span>
+                                <span class="meta-value">{{ release.labels[0].name }} {% if release.labels[0].catno %}- {{ release.labels[0].catno }}{% endif %}</span>
+                                {% endif %}
+                                {% if release.year %}
+                                <span class="meta-label">Year</span>
+                                <span class="meta-value">{{ release.year }}</span>
+                                {% endif %}
+                                {% if release.format %}
+                                <span class="meta-label">Format</span>
+                                <span class="meta-value">{{ release.format }}</span>
+                                {% endif %}
+                                {% if release.country %}
+                                <span class="meta-label">Country</span>
+                                <span class="meta-value">{{ release.country }}</span>
+                                {% endif %}
+                            </div>
+                            {% if release.genres or release.styles %}
+                            <div class="tags" style="margin-top: 10px;">
+                                {% for genre in release.genres %}
+                                <span class="tag">{{ genre }}</span>
+                                {% endfor %}
+                                {% for style in release.styles %}
+                                <span class="tag">{{ style }}</span>
+                                {% endfor %}
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% if release.tracklist %}
+                    <div class="tracklist">
+                        {% for t in release.tracklist %}
+                        <div class="tracklist-item {% if t.position == track.discogs_track_position %}highlight{% endif %}">
+                            <span class="track-pos">{{ t.position }}</span>
+                            <span class="track-name">{{ t.title }}</span>
+                            <span class="track-dur">{{ t.duration }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endif %}
+                    <a href="{{ release.url }}" target="_blank" class="external-link">View on Discogs</a>
+                    {% else %}
+                    <p style="color: #666;">Release info not available</p>
+                    {% endif %}
+                </div>
+
+                <div class="side side-match">
+                    <div class="side-title">
+                        {% if track.destination == 'spotify' %}
+                        <svg class="icon" viewBox="0 0 24 24" fill="#1db954"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
+                        {% else %}
+                        <svg class="icon" viewBox="0 0 24 24" fill="#ff5500"><path d="M1.175 12.225c-.051 0-.094.046-.101.1l-.233 2.154.102.1H1.96l-.022-.198-1.563.004v-.103l.145-.996.188-.996v-.065H.67l-.02.065-.21 1.078-.147.913h-.02l-.147-.913-.21-1.078-.02-.065H.115c-.051 0-.086.046-.101.1v.049l.23 2.153h.15l.007-.003.147-.002.15-.001.151-.001.14-.001.134-.002.21-1.078.135-.765h.02l.136.765.21 1.078h.133l.139.002.15.001.151.001.146.002.008.003h.15l.231-2.153c-.015-.055-.05-.1-.101-.1h-.07l-.001.001zm6.61-.147c-.053 0-.095.043-.103.098l-.173 1.595-.002.04-.002.04.002.04.003.04.027.245h.15l.005-.002.008-.003.015-.006.022-.01.026-.012.03-.014.031-.014.031-.014.03-.012.026-.01.02-.007.015-.004.009-.002h.004l.107-.003h.005l.093.002.082.007.076.012.07.017.066.021.063.025.06.03.058.033.057.037.056.04.055.044.053.046.052.05.05.052.047.054.045.056.043.058.04.059.037.06.034.06.031.06.027.06.023.058.018.057.014.055.009.052.004.05v.046l-.004.043-.01.04-.015.037-.021.033-.027.03-.034.026-.04.022-.047.017-.054.013-.061.007-.068.002-.075-.004-.082-.01-.088-.016-.092-.022-.095-.028-.096-.033-.095-.038-.093-.043-.088-.047-.082-.05-.074-.053-.065-.055-.055-.056-.045-.055-.035-.054-.025-.052-.016-.048-.008-.045-.001-.04.005-.037.011-.032.016-.028.021-.024.025-.019.029-.016.032-.012.035-.009.038-.005h.079l.04.006.044.01.048.014.052.02.054.025.055.031.055.037.054.043.051.048.047.053.043.057.037.061.031.063.024.065.016.065.008.065v.063l-.008.06-.016.058-.025.054-.034.05-.043.047-.053.043-.064.038-.074.033-.085.028-.095.023-.106.016-.115.01-.125.003-.133-.004-.14-.011-.146-.018-.151-.024-.153-.03-.154-.035-.153-.04-.15-.044-.145-.047-.139-.05-.131-.051-.122-.053-.112-.053-.102-.053-.09-.051-.079-.049-.068-.047-.057-.044-.046-.04-.036-.037-.027-.033-.019-.028-.012-.024-.006-.02-.002-.016.002-.012.005-.01.009-.006.011-.004.013-.002h.013l.014.002.014.004.015.006.015.009.016.01.018.013.019.015.022.017.025.02.028.023.032.025.037.028.042.03.047.033.053.035.059.036.065.038.072.039.078.039.085.04.091.04.097.04.102.039.107.038.111.037.115.035.117.033.119.031.12.028.12.025.119.022.116.019.114.015.11.011.105.008.1.004h.093l.087-.004.08-.008.074-.012.067-.016.06-.021.054-.025.046-.03.04-.033.034-.038.027-.042.021-.046.015-.05.009-.055.003-.058v-.003l-.003-.056-.009-.054-.015-.05-.022-.046-.028-.043-.036-.04-.043-.036-.051-.032-.059-.028-.067-.024-.076-.02-.084-.016-.093-.011-.101-.007-.108-.003-.114.002-.119.006-.124.01-.127.015-.129.019-.13.023-.129.026-.127.03-.124.033-.119.035-.113.038-.107.04-.099.04-.091.042-.082.042-.073.042-.064.042-.054.041-.045.04-.036.039-.027.036-.02.034-.013.031-.007.028-.003.025v.021l.004.018.007.015.01.012.012.008.013.006.014.003h.028l.015-.003.016-.006.018-.009.02-.012.023-.015.026-.019.03-.022.034-.026.039-.03.045-.033.05-.037.057-.04.063-.042.07-.045.077-.047.084-.048.091-.049.098-.05.105-.05.111-.05.117-.05.122-.049.127-.048.13-.046.133-.045.135-.042.136-.04.136-.037.135-.034.133-.031.13-.027.125-.024.12-.02.114-.017.107-.013.099-.01.091-.007.082-.004h.072l.063.003.054.007.045.01.037.013.029.015.021.018.015.02.009.022.004.023v.024l-.004.025-.009.025-.015.024-.02.024-.027.023-.033.022-.04.021-.046.02-.053.018-.06.017-.066.015-.073.013-.08.011-.086.009-.092.007-.098.005-.103.003h-.107l-.112-.003-.115-.005-.118-.008-.12-.01-.122-.013-.123-.015-.123-.018-.122-.02-.121-.023-.119-.025-.116-.027-.112-.029-.108-.031-.103-.032-.098-.034-.092-.035-.086-.036-.08-.037-.073-.037-.067-.038-.06-.038-.053-.038-.047-.038-.04-.037-.034-.037-.028-.036-.022-.036-.017-.035-.012-.034-.008-.033-.004-.032-.001-.03.002-.03.005-.028.008-.027.011-.026.014-.024.017-.023.02-.022.022-.02.025-.019.027-.018.03-.017.031-.015.034-.015.035-.013.037-.012.039-.01.04-.01.042-.008.043-.008.044-.006.045-.006.046-.005.046-.004.047-.004.048-.003h.096l.048.002.048.003.049.004.049.005.049.006.049.007.049.008.049.01.05.01.049.012.05.013.05.014.05.016.05.017.05.019.05.02.05.022.05.023.049.025.05.027.049.029.049.03.048.033.048.034.047.036.046.038.045.04.044.042.043.044.041.046.04.048.037.05.035.052.033.054.03.056.028.057.024.059.021.06.017.062.014.063.009.064.005.065.001.065v.001l-.002.063-.006.063-.011.062-.016.06-.022.06-.027.057-.033.056-.039.054-.045.051-.051.049-.058.046-.065.044-.072.04-.079.037-.087.034-.094.03-.102.027-.11.022-.117.018-.125.014-.133.009-.14.005h-.147l-.152-.005-.157-.01-.16-.014-.162-.019-.163-.023-.162-.027-.16-.031-.156-.035-.151-.038-.145-.042-.138-.044-.129-.047-.12-.049-.11-.05-.099-.051-.088-.051-.077-.051-.066-.05-.055-.049-.045-.047-.036-.045-.027-.043-.019-.04-.012-.038-.006-.035-.001-.032.003-.03.007-.026.01-.024.013-.021.016-.018.017-.015.018-.013.019-.01.018-.009.018-.006.016-.005.014-.003.011-.002h.018l.01.002.012.003.013.005.015.007.016.01.018.012.02.015.022.017.024.02.027.023.03.026.034.028.037.031.042.033.046.036.05.038.055.04.06.041.066.042.071.044.077.044.083.045.089.045.095.045.1.044.106.043.111.042.116.041.12.039.124.037.127.035.13.032.132.03.133.027.133.024.133.021.131.018.129.014.126.011.122.008.117.005h.111l.106-.004.1-.008.093-.011.087-.015.08-.018.074-.022.068-.025.062-.028.056-.032.05-.035.045-.037.04-.04.035-.043.031-.046.027-.048.023-.05.02-.053.017-.055.015-.056.012-.058.01-.059.009-.06.007-.061.006-.062.004-.062.003-.063.002-.063.001-.063v-.063z"/></svg>
+                        {% endif %}
+                        Matched on {{ track.destination|capitalize }}
+                    </div>
+
+                    <span class="platform-badge platform-{{ track.destination }}">{{ track.destination }}</span>
+
+                    <div class="embed-container">
+                        {% if track.destination == 'spotify' and track.destination_track_id %}
+                        <iframe
+                            src="https://open.spotify.com/embed/track/{{ track.destination_track_id }}?utm_source=generator&theme=0"
+                            width="100%"
+                            height="152"
+                            allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+                            loading="lazy">
+                        </iframe>
+                        {% elif track.destination == 'soundcloud' and track.destination_track_id %}
+                        <iframe
+                            width="100%"
+                            height="166"
+                            scrolling="no"
+                            frameborder="no"
+                            allow="autoplay"
+                            src="https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/{{ track.destination_track_id }}&color=%23ff5500&auto_play=false&hide_related=true&show_comments=false&show_user=true&show_reposts=false&show_teaser=false">
+                        </iframe>
+                        {% else %}
+                        <p style="color: #666; text-align: center; padding: 40px;">No preview available</p>
+                        {% endif %}
+                    </div>
+
+                    {% if track.destination == 'spotify' and track.destination_track_id %}
+                    <a href="https://open.spotify.com/track/{{ track.destination_track_id }}" target="_blank" class="external-link">Open in Spotify</a>
+                    {% elif track.destination == 'soundcloud' and track.destination_track_id %}
+                    <a href="https://api.soundcloud.com/tracks/{{ track.destination_track_id }}" target="_blank" class="external-link">View on SoundCloud</a>
+                    {% endif %}
+                </div>
+            </div>
         </div>
+        {% endfor %}
         {% else %}
         <div class="empty-state">
             <h2>All Clear!</h2>
