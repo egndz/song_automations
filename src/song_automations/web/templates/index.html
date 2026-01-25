@@ -426,6 +426,136 @@
             color: #666;
             margin-top: 5px;
         }
+
+        .btn-alternatives {
+            background: #6c5ce7;
+            color: #fff;
+            padding: 10px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 600;
+            transition: all 0.2s;
+        }
+        .btn-alternatives:hover {
+            background: #7d6fe8;
+            transform: scale(1.05);
+        }
+        .btn-alternatives:disabled {
+            opacity: 0.6;
+            cursor: wait;
+        }
+
+        .alternatives-panel {
+            display: none;
+            background: #151528;
+            border-top: 1px solid #333;
+            padding: 20px;
+        }
+        .alternatives-panel.show {
+            display: block;
+        }
+        .alternatives-title {
+            font-size: 1rem;
+            color: #fff;
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .alternatives-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 15px;
+        }
+        .alternative-card {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 15px;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .alternative-card:hover {
+            border-color: #6c5ce7;
+        }
+        .alternative-card.current {
+            border-color: #1db954;
+            background: rgba(29, 185, 84, 0.1);
+        }
+        .alternative-card.selected {
+            border-color: #6c5ce7;
+            background: rgba(108, 92, 231, 0.1);
+        }
+        .alt-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .alt-score {
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: #1db954;
+        }
+        .alt-verified {
+            background: #1db954;
+            color: #fff;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7rem;
+        }
+        .alt-title {
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 5px;
+        }
+        .alt-artist {
+            color: #888;
+            font-size: 0.9rem;
+            margin-bottom: 10px;
+        }
+        .alt-embed {
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 10px;
+        }
+        .alt-select-btn {
+            width: 100%;
+            padding: 8px;
+            background: #6c5ce7;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .alt-select-btn:hover {
+            background: #7d6fe8;
+        }
+        .alt-current-label {
+            width: 100%;
+            padding: 8px;
+            background: #1db954;
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            text-align: center;
+            font-size: 0.85rem;
+        }
+        .loading-spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 2px solid #fff;
+            border-radius: 50%;
+            border-top-color: transparent;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
@@ -476,6 +606,12 @@
                     </span>
                 </div>
                 <div class="actions">
+                    <div style="text-align: center;">
+                        <button type="button" class="btn-alternatives" onclick="showAlternatives({{ track.id }}, this)">
+                            Show Alternatives
+                        </button>
+                        <div class="action-hint">Search for other matches</div>
+                    </div>
                     <div style="text-align: center;">
                         <form action="/approve/{{ track.id }}" method="post" style="display: inline;">
                             <button type="submit" class="action-btn btn-approve">Approve</button>
@@ -604,6 +740,16 @@
                     </details>
                 </div>
             </div>
+
+            <div class="alternatives-panel" id="alternatives-{{ track.id }}">
+                <div class="alternatives-title">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                    Alternative Matches
+                </div>
+                <div class="alternatives-grid" id="alternatives-grid-{{ track.id }}">
+                    <p style="color: #888;">Loading alternatives...</p>
+                </div>
+            </div>
         </div>
         {% endfor %}
 
@@ -631,5 +777,68 @@
         </div>
         {% endif %}
     </div>
+
+    <script>
+        async function showAlternatives(trackId, button) {
+            const panel = document.getElementById(`alternatives-${trackId}`);
+            const grid = document.getElementById(`alternatives-grid-${trackId}`);
+
+            if (panel.classList.contains('show')) {
+                panel.classList.remove('show');
+                button.textContent = 'Show Alternatives';
+                return;
+            }
+
+            button.disabled = true;
+            button.innerHTML = '<span class="loading-spinner"></span> Searching...';
+
+            try {
+                const response = await fetch(`/alternatives/${trackId}`);
+                if (!response.ok) throw new Error('Failed to fetch alternatives');
+
+                const data = await response.json();
+
+                if (data.alternatives.length === 0) {
+                    grid.innerHTML = '<p style="color: #888;">No alternatives found</p>';
+                } else {
+                    grid.innerHTML = data.alternatives.map(alt => `
+                        <div class="alternative-card ${alt.is_current ? 'current' : ''}" data-track-id="${alt.track_id}">
+                            <div class="alt-header">
+                                <span class="alt-score">${Math.round(alt.score * 100)}%</span>
+                                ${alt.is_verified ? '<span class="alt-verified">Verified</span>' : ''}
+                            </div>
+                            <div class="alt-title">${escapeHtml(alt.title)}</div>
+                            <div class="alt-artist">${escapeHtml(alt.artist)}</div>
+                            <div class="alt-embed">
+                                <iframe src="${alt.embed_url}" width="100%" height="80" frameborder="0" allow="autoplay" loading="lazy"></iframe>
+                            </div>
+                            ${alt.is_current
+                                ? '<div class="alt-current-label">Currently Selected</div>'
+                                : `<form action="/select-alternative/${trackId}" method="post">
+                                     <input type="hidden" name="new_track_id" value="${alt.track_id}">
+                                     <button type="submit" class="alt-select-btn">Select This</button>
+                                   </form>`
+                            }
+                        </div>
+                    `).join('');
+                }
+
+                panel.classList.add('show');
+                button.textContent = 'Hide Alternatives';
+            } catch (error) {
+                grid.innerHTML = `<p style="color: #ff4757;">Error: ${error.message}</p>`;
+                panel.classList.add('show');
+                button.textContent = 'Hide Alternatives';
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
 </body>
 </html>

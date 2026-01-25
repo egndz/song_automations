@@ -1,5 +1,6 @@
 """FastAPI application for reviewing track matches."""
 
+import math
 import re
 from pathlib import Path
 
@@ -8,7 +9,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from song_automations.clients.discogs import DiscogsClient
+from song_automations.clients.soundcloud import SoundCloudClient
+from song_automations.clients.spotify import SpotifyClient
 from song_automations.config import get_settings
+from song_automations.matching.fuzzy import parse_track_title, score_candidate
 from song_automations.state.tracker import StateTracker
 
 ITEMS_PER_PAGE = 10
@@ -222,5 +226,120 @@ def create_app() -> FastAPI:
             "destination_track_id": track.destination_track_id,
             "links": links,
         }
+
+    @app.get("/alternatives/{track_id}")
+    async def get_alternatives(track_id: int):
+        """Search for alternative matches for a track."""
+        track = tracker.get_matched_track_by_id(track_id)
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+
+        release_info = get_release_info(track.discogs_release_id)
+        label = ""
+        if release_info and release_info.get("labels"):
+            label = release_info["labels"][0].get("name", "")
+
+        parsed = parse_track_title(track.track_name, track.artist)
+
+        queries = [parsed.search_query]
+        if parsed.version:
+            queries.append(parsed.fallback_query)
+        if label:
+            queries.append(f"{label} {parsed.base_title}")
+        if parsed.remixer:
+            queries.append(f"{parsed.remixer} {parsed.base_title}")
+        queries.append(parsed.base_title)
+
+        try:
+            if track.destination == "spotify":
+                client = SpotifyClient(settings)
+            else:
+                client = SoundCloudClient(settings)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to initialize client: {e}")
+
+        all_results = []
+        seen_ids = set()
+
+        for query in queries[:5]:
+            try:
+                results = client.search_tracks(query, limit=10)
+                for result in results:
+                    result_track = result.track
+                    track_id_val = result_track.id
+                    if track_id_val in seen_ids:
+                        continue
+                    seen_ids.add(track_id_val)
+
+                    if track.destination == "spotify":
+                        candidate_title = result_track.name
+                        candidate_artist = result_track.artist
+                        popularity = result_track.popularity
+                        is_verified = result.is_verified
+                    else:
+                        candidate_title = result_track.title
+                        candidate_artist = result_track.artist
+                        raw_plays = result_track.playback_count or 0
+                        popularity = int(math.log10(raw_plays + 1) / 6 * 100)
+                        is_verified = result.is_verified
+
+                    total_score, artist_score, title_score, verified_bonus, pop_score = score_candidate(
+                        parsed_track=parsed,
+                        candidate_title=candidate_title,
+                        candidate_artist=candidate_artist,
+                        is_verified=is_verified,
+                        popularity=popularity,
+                        max_popularity=100,
+                        label=label,
+                    )
+
+                    if track.destination == "spotify":
+                        embed_url = f"https://open.spotify.com/embed/track/{track_id_val}?utm_source=generator&theme=0"
+                        external_url = f"https://open.spotify.com/track/{track_id_val}"
+                    else:
+                        embed_url = f"https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/{track_id_val}&color=%23ff5500&auto_play=false&hide_related=true&show_comments=false"
+                        external_url = result_track.permalink_url if hasattr(result_track, 'permalink_url') else ""
+
+                    all_results.append({
+                        "track_id": str(track_id_val),
+                        "title": candidate_title,
+                        "artist": candidate_artist,
+                        "score": round(total_score, 3),
+                        "artist_score": round(artist_score, 3),
+                        "title_score": round(title_score, 3),
+                        "is_verified": is_verified,
+                        "embed_url": embed_url,
+                        "external_url": external_url,
+                        "is_current": str(track_id_val) == track.destination_track_id,
+                    })
+            except Exception:
+                continue
+
+        all_results.sort(key=lambda x: x["score"], reverse=True)
+
+        return {
+            "track_id": track_id,
+            "search_query": parsed.search_query,
+            "alternatives": all_results[:10],
+        }
+
+    @app.post("/select-alternative/{track_id}")
+    async def select_alternative(
+        track_id: int,
+        new_track_id: str = Form(...),
+    ):
+        """Select one of the alternative matches."""
+        track = tracker.get_matched_track_by_id(track_id)
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+
+        tracker.update_matched_track(
+            track_id=track_id,
+            destination_track_id=new_track_id,
+            match_confidence=1.0,
+        )
+        tracker.update_review_status(track_id, "approved")
+
+        return RedirectResponse(url="/", status_code=303)
 
     return app
