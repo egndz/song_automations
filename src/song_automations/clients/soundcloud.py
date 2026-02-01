@@ -11,8 +11,9 @@ from threading import Thread
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from song_automations.clients.http import DEFAULT_TIMEOUT, handle_rate_limit
+from song_automations.clients.http import DEFAULT_TIMEOUT, RETRYABLE_EXCEPTIONS, handle_rate_limit
 from song_automations.config import Settings
 
 
@@ -271,6 +272,36 @@ class SoundCloudClient:
             "Accept": "application/json",
         }
 
+    @retry(
+        retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        reraise=True,
+    )
+    def _request(
+        self,
+        method: str,
+        url: str,
+        **kwargs,
+    ) -> httpx.Response:
+        """Make an HTTP request with retry logic for transient errors.
+
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE).
+            url: URL to request.
+            **kwargs: Additional arguments passed to httpx.
+
+        Returns:
+            The HTTP response.
+
+        Raises:
+            httpx.ReadTimeout: After 3 retry attempts.
+            httpx.ConnectError: After 3 retry attempts.
+        """
+        if "headers" not in kwargs:
+            kwargs["headers"] = self._get_headers()
+        return self._http_client.request(method, url, **kwargs)
+
     def _handle_auth_error(self, response: httpx.Response) -> bool:
         """Handle 401 Unauthorized by attempting token refresh.
 
@@ -292,10 +323,7 @@ class SoundCloudClient:
     def user_id(self) -> int:
         """Get the authenticated user's ID."""
         if self._user_id is None:
-            response = self._http_client.get(
-                f"{self.API_BASE}/me",
-                headers=self._get_headers(),
-            )
+            response = self._request("GET", f"{self.API_BASE}/me")
             handle_rate_limit(response)
             response.raise_for_status()
             self._user_id = response.json()["id"]
@@ -315,15 +343,15 @@ class SoundCloudClient:
         Returns:
             List of SearchResult objects.
         """
-        response = self._http_client.get(
+        response = self._request(
+            "GET",
             f"{self.API_BASE}/tracks",
-            headers=self._get_headers(),
             params={"q": query, "limit": limit},
         )
         if self._handle_auth_error(response):
-            response = self._http_client.get(
+            response = self._request(
+                "GET",
                 f"{self.API_BASE}/tracks",
-                headers=self._get_headers(),
                 params={"q": query, "limit": limit},
             )
         handle_rate_limit(response)
@@ -349,15 +377,9 @@ class SoundCloudClient:
         """
         playlists = []
 
-        response = self._http_client.get(
-            f"{self.API_BASE}/me/playlists",
-            headers=self._get_headers(),
-        )
+        response = self._request("GET", f"{self.API_BASE}/me/playlists")
         if self._handle_auth_error(response):
-            response = self._http_client.get(
-                f"{self.API_BASE}/me/playlists",
-                headers=self._get_headers(),
-            )
+            response = self._request("GET", f"{self.API_BASE}/me/playlists")
         handle_rate_limit(response)
         response.raise_for_status()
         items = response.json()
@@ -419,17 +441,9 @@ class SoundCloudClient:
             }
         }
 
-        response = self._http_client.post(
-            f"{self.API_BASE}/playlists",
-            headers=self._get_headers(),
-            json=data,
-        )
+        response = self._request("POST", f"{self.API_BASE}/playlists", json=data)
         if self._handle_auth_error(response):
-            response = self._http_client.post(
-                f"{self.API_BASE}/playlists",
-                headers=self._get_headers(),
-                json=data,
-            )
+            response = self._request("POST", f"{self.API_BASE}/playlists", json=data)
         handle_rate_limit(response)
         response.raise_for_status()
         result = response.json()
@@ -449,15 +463,9 @@ class SoundCloudClient:
         Args:
             playlist_id: SoundCloud playlist ID.
         """
-        response = self._http_client.delete(
-            f"{self.API_BASE}/playlists/{playlist_id}",
-            headers=self._get_headers(),
-        )
+        response = self._request("DELETE", f"{self.API_BASE}/playlists/{playlist_id}")
         if self._handle_auth_error(response):
-            response = self._http_client.delete(
-                f"{self.API_BASE}/playlists/{playlist_id}",
-                headers=self._get_headers(),
-            )
+            response = self._request("DELETE", f"{self.API_BASE}/playlists/{playlist_id}")
         handle_rate_limit(response)
         response.raise_for_status()
 
@@ -470,15 +478,9 @@ class SoundCloudClient:
         Returns:
             List of SoundCloudTrack objects.
         """
-        response = self._http_client.get(
-            f"{self.API_BASE}/playlists/{playlist_id}",
-            headers=self._get_headers(),
-        )
+        response = self._request("GET", f"{self.API_BASE}/playlists/{playlist_id}")
         if self._handle_auth_error(response):
-            response = self._http_client.get(
-                f"{self.API_BASE}/playlists/{playlist_id}",
-                headers=self._get_headers(),
-            )
+            response = self._request("GET", f"{self.API_BASE}/playlists/{playlist_id}")
         handle_rate_limit(response)
         response.raise_for_status()
         data = response.json()
@@ -510,25 +512,17 @@ class SoundCloudClient:
             }
         }
 
-        response = self._http_client.put(
-            f"{self.API_BASE}/playlists/{playlist_id}",
-            headers=self._get_headers(),
-            json=data,
-        )
+        response = self._request("PUT", f"{self.API_BASE}/playlists/{playlist_id}", json=data)
         if self._handle_auth_error(response):
-            response = self._http_client.put(
-                f"{self.API_BASE}/playlists/{playlist_id}",
-                headers=self._get_headers(),
-                json=data,
-            )
+            response = self._request("PUT", f"{self.API_BASE}/playlists/{playlist_id}", json=data)
         handle_rate_limit(response)
         if response.status_code == 422:
             valid_ids = self._add_tracks_individually(playlist_id, track_ids)
             if valid_ids:
                 data["playlist"]["tracks"] = [{"id": tid} for tid in valid_ids]
-                retry_response = self._http_client.put(
+                retry_response = self._request(
+                    "PUT",
                     f"{self.API_BASE}/playlists/{playlist_id}",
-                    headers=self._get_headers(),
                     json=data,
                 )
                 handle_rate_limit(retry_response)
@@ -553,9 +547,9 @@ class SoundCloudClient:
         for tid in track_ids:
             test_ids = valid_ids + [tid]
             data = {"playlist": {"tracks": [{"id": t} for t in test_ids]}}
-            response = self._http_client.put(
+            response = self._request(
+                "PUT",
                 f"{self.API_BASE}/playlists/{playlist_id}",
-                headers=self._get_headers(),
                 json=data,
             )
             handle_rate_limit(response)
