@@ -54,6 +54,7 @@ def _run_sync(
     folder_names: list[str] | None,
     exclude_wantlist: bool,
     dry_run: bool,
+    force_rematch: bool = False,
 ) -> SyncResult:
     """Execute sync for a platform.
 
@@ -63,12 +64,18 @@ def _run_sync(
         folder_names: Optional folder filter.
         exclude_wantlist: Whether to exclude wantlist.
         dry_run: If True, don't make changes.
+        force_rematch: If True, clear match cache before syncing.
 
     Returns:
         SyncResult with operation details.
     """
     discogs_client = DiscogsClient(settings)
     state_tracker = StateTracker(settings.db_path)
+
+    if force_rematch:
+        count = state_tracker.clear_matched_tracks(platform)
+        console.print(f"[yellow]Cleared {count} cached matches for {platform}[/yellow]\n")
+
     engine = SyncEngine(settings, discogs_client, state_tracker, console)
 
     if platform == "spotify":
@@ -145,6 +152,13 @@ def sync_spotify(
             help="Minimum confidence threshold (0.0-1.0).",
         ),
     ] = None,
+    force_rematch: Annotated[
+        bool,
+        typer.Option(
+            "--force-rematch",
+            help="Clear match cache and re-search all tracks.",
+        ),
+    ] = False,
 ) -> None:
     """Sync Discogs folders to Spotify playlists."""
     settings = _init_settings(min_confidence)
@@ -165,7 +179,7 @@ def sync_spotify(
     if dry_run:
         console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
 
-    result = _run_sync(settings, "spotify", folder_names, exclude_wantlist, dry_run)
+    result = _run_sync(settings, "spotify", folder_names, exclude_wantlist, dry_run, force_rematch)
     _print_sync_result(result, dry_run)
 
 
@@ -201,6 +215,13 @@ def sync_soundcloud(
             help="Minimum confidence threshold (0.0-1.0).",
         ),
     ] = None,
+    force_rematch: Annotated[
+        bool,
+        typer.Option(
+            "--force-rematch",
+            help="Clear match cache and re-search all tracks.",
+        ),
+    ] = False,
 ) -> None:
     """Sync Discogs folders to SoundCloud playlists."""
     settings = _init_settings(min_confidence)
@@ -221,7 +242,7 @@ def sync_soundcloud(
     if dry_run:
         console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
 
-    result = _run_sync(settings, "soundcloud", folder_names, exclude_wantlist, dry_run)
+    result = _run_sync(settings, "soundcloud", folder_names, exclude_wantlist, dry_run, force_rematch)
     _print_sync_result(result, dry_run)
 
 
@@ -250,6 +271,13 @@ def sync_all(
             help="Show what would be done without making changes.",
         ),
     ] = False,
+    force_rematch: Annotated[
+        bool,
+        typer.Option(
+            "--force-rematch",
+            help="Clear match cache and re-search all tracks.",
+        ),
+    ] = False,
 ) -> None:
     """Sync Discogs folders to both Spotify and SoundCloud."""
     console.print("[bold]Syncing to all platforms...[/bold]\n")
@@ -260,6 +288,7 @@ def sync_all(
         exclude_wantlist=exclude_wantlist,
         dry_run=dry_run,
         min_confidence=None,
+        force_rematch=force_rematch,
     )
 
     console.print("\n[bold cyan]--- SoundCloud ---[/bold cyan]")
@@ -268,6 +297,7 @@ def sync_all(
         exclude_wantlist=exclude_wantlist,
         dry_run=dry_run,
         min_confidence=None,
+        force_rematch=force_rematch,
     )
 
 

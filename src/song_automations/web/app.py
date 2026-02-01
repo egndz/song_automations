@@ -1,14 +1,50 @@
 """FastAPI application for reviewing track matches."""
 
+import math
+import re
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from song_automations.clients.discogs import DiscogsClient
+from song_automations.clients.soundcloud import SoundCloudClient
+from song_automations.clients.spotify import SpotifyClient
 from song_automations.config import get_settings
+from song_automations.matching.fuzzy import parse_track_title, score_candidate
 from song_automations.state.tracker import StateTracker
+
+ITEMS_PER_PAGE = 10
+
+
+def extract_track_id(url: str, platform: str) -> str | None:
+    """Extract track ID from a Spotify or SoundCloud URL.
+
+    Args:
+        url: Full URL or just the ID.
+        platform: Either 'spotify' or 'soundcloud'.
+
+    Returns:
+        Extracted track ID or None if invalid.
+    """
+    url = url.strip()
+
+    if platform == "spotify":
+        match = re.search(r"track[/:]([a-zA-Z0-9]+)", url)
+        if match:
+            return match.group(1)
+        if re.match(r"^[a-zA-Z0-9]{22}$", url):
+            return url
+
+    elif platform == "soundcloud":
+        match = re.search(r"tracks[/:](\d+)", url)
+        if match:
+            return match.group(1)
+        if re.match(r"^\d+$", url):
+            return url
+
+    return None
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
@@ -64,15 +100,27 @@ def create_app() -> FastAPI:
             return None
 
     @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request, destination: str | None = None):
-        """Display flagged tracks for review."""
-        flagged = tracker.get_flagged_tracks(
+    async def index(
+        request: Request,
+        destination: str | None = None,
+        page: int = Query(1, ge=1),
+    ):
+        """Display flagged tracks for review with pagination."""
+        all_flagged = tracker.get_flagged_tracks(
             high_confidence=settings.high_confidence,
             destination=destination,
         )
 
+        total_items = len(all_flagged)
+        total_pages = max(1, (total_items + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+        page = min(page, total_pages)
+
+        start_idx = (page - 1) * ITEMS_PER_PAGE
+        end_idx = start_idx + ITEMS_PER_PAGE
+        paginated = all_flagged[start_idx:end_idx]
+
         tracks_with_info = []
-        for track in flagged:
+        for track in paginated:
             release_info = get_release_info(track.discogs_release_id)
             tracks_with_info.append({
                 "track": track,
@@ -80,9 +128,9 @@ def create_app() -> FastAPI:
             })
 
         stats = {
-            "total": len(flagged),
-            "spotify": len([t for t in flagged if t.destination == "spotify"]),
-            "soundcloud": len([t for t in flagged if t.destination == "soundcloud"]),
+            "total": total_items,
+            "spotify": len([t for t in all_flagged if t.destination == "spotify"]),
+            "soundcloud": len([t for t in all_flagged if t.destination == "soundcloud"]),
         }
 
         return templates.TemplateResponse(
@@ -92,6 +140,9 @@ def create_app() -> FastAPI:
                 "tracks_with_info": tracks_with_info,
                 "stats": stats,
                 "destination_filter": destination,
+                "page": page,
+                "total_pages": total_pages,
+                "total_items": total_items,
             },
         )
 
@@ -107,12 +158,38 @@ def create_app() -> FastAPI:
 
     @app.post("/reject/{track_id}")
     async def reject_track(track_id: int):
-        """Reject a track match and remove from cache."""
+        """Reject a track match - will be removed from playlist on next sync."""
         track = tracker.get_matched_track_by_id(track_id)
         if not track:
             raise HTTPException(status_code=404, detail="Track not found")
 
         tracker.update_review_status(track_id, "rejected")
+        return RedirectResponse(url="/", status_code=303)
+
+    @app.post("/correct/{track_id}")
+    async def correct_track(
+        track_id: int,
+        correct_url: str = Form(...),
+    ):
+        """Update a track with the correct URL provided by user."""
+        track = tracker.get_matched_track_by_id(track_id)
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+
+        new_track_id = extract_track_id(correct_url, track.destination)
+        if not new_track_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid {track.destination} URL or track ID",
+            )
+
+        tracker.update_matched_track(
+            track_id=track_id,
+            destination_track_id=new_track_id,
+            match_confidence=1.0,
+        )
+        tracker.update_review_status(track_id, "approved")
+
         return RedirectResponse(url="/", status_code=303)
 
     @app.post("/approve-all")
@@ -149,5 +226,120 @@ def create_app() -> FastAPI:
             "destination_track_id": track.destination_track_id,
             "links": links,
         }
+
+    @app.get("/alternatives/{track_id}")
+    async def get_alternatives(track_id: int):
+        """Search for alternative matches for a track."""
+        track = tracker.get_matched_track_by_id(track_id)
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+
+        release_info = get_release_info(track.discogs_release_id)
+        label = ""
+        if release_info and release_info.get("labels"):
+            label = release_info["labels"][0].get("name", "")
+
+        parsed = parse_track_title(track.track_name, track.artist)
+
+        queries = [parsed.search_query]
+        if parsed.version:
+            queries.append(parsed.fallback_query)
+        if label:
+            queries.append(f"{label} {parsed.base_title}")
+        if parsed.remixer:
+            queries.append(f"{parsed.remixer} {parsed.base_title}")
+        queries.append(parsed.base_title)
+
+        try:
+            if track.destination == "spotify":
+                client = SpotifyClient(settings)
+            else:
+                client = SoundCloudClient(settings)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to initialize client: {e}")
+
+        all_results = []
+        seen_ids = set()
+
+        for query in queries[:5]:
+            try:
+                results = client.search_tracks(query, limit=10)
+                for result in results:
+                    result_track = result.track
+                    track_id_val = result_track.id
+                    if track_id_val in seen_ids:
+                        continue
+                    seen_ids.add(track_id_val)
+
+                    if track.destination == "spotify":
+                        candidate_title = result_track.name
+                        candidate_artist = result_track.artist
+                        popularity = result_track.popularity
+                        is_verified = result.is_verified
+                    else:
+                        candidate_title = result_track.title
+                        candidate_artist = result_track.artist
+                        raw_plays = result_track.playback_count or 0
+                        popularity = int(math.log10(raw_plays + 1) / 6 * 100)
+                        is_verified = result.is_verified
+
+                    total_score, artist_score, title_score, verified_bonus, pop_score = score_candidate(
+                        parsed_track=parsed,
+                        candidate_title=candidate_title,
+                        candidate_artist=candidate_artist,
+                        is_verified=is_verified,
+                        popularity=popularity,
+                        max_popularity=100,
+                        label=label,
+                    )
+
+                    if track.destination == "spotify":
+                        embed_url = f"https://open.spotify.com/embed/track/{track_id_val}?utm_source=generator&theme=0"
+                        external_url = f"https://open.spotify.com/track/{track_id_val}"
+                    else:
+                        embed_url = f"https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/{track_id_val}&color=%23ff5500&auto_play=false&hide_related=true&show_comments=false"
+                        external_url = result_track.permalink_url if hasattr(result_track, 'permalink_url') else ""
+
+                    all_results.append({
+                        "track_id": str(track_id_val),
+                        "title": candidate_title,
+                        "artist": candidate_artist,
+                        "score": round(total_score, 3),
+                        "artist_score": round(artist_score, 3),
+                        "title_score": round(title_score, 3),
+                        "is_verified": is_verified,
+                        "embed_url": embed_url,
+                        "external_url": external_url,
+                        "is_current": str(track_id_val) == track.destination_track_id,
+                    })
+            except Exception:
+                continue
+
+        all_results.sort(key=lambda x: x["score"], reverse=True)
+
+        return {
+            "track_id": track_id,
+            "search_query": parsed.search_query,
+            "alternatives": all_results[:10],
+        }
+
+    @app.post("/select-alternative/{track_id}")
+    async def select_alternative(
+        track_id: int,
+        new_track_id: str = Form(...),
+    ):
+        """Select one of the alternative matches."""
+        track = tracker.get_matched_track_by_id(track_id)
+        if not track:
+            raise HTTPException(status_code=404, detail="Track not found")
+
+        tracker.update_matched_track(
+            track_id=track_id,
+            destination_track_id=new_track_id,
+            match_confidence=1.0,
+        )
+        tracker.update_review_status(track_id, "approved")
+
+        return RedirectResponse(url="/", status_code=303)
 
     return app

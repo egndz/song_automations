@@ -60,6 +60,8 @@ class Release:
         year: Release year.
         folder_id: Folder ID this release belongs to.
         folder_name: Folder name this release belongs to.
+        label: Primary label name.
+        catalog_number: Release catalog number.
     """
 
     id: int
@@ -68,6 +70,8 @@ class Release:
     year: int
     folder_id: int
     folder_name: str
+    label: str = ""
+    catalog_number: str = ""
 
 
 class DiscogsClient:
@@ -143,6 +147,7 @@ class DiscogsClient:
         for item in folder.releases:
             release = item.release
             artists = self._extract_artists(release.artists)
+            label, catalog_number = self._extract_label_info(release)
             yield Release(
                 id=release.id,
                 title=release.title,
@@ -150,6 +155,8 @@ class DiscogsClient:
                 year=release.year or 0,
                 folder_id=folder_id,
                 folder_name=folder.name,
+                label=label,
+                catalog_number=catalog_number,
             )
 
     def get_wantlist_releases(self) -> Iterator[Release]:
@@ -161,6 +168,7 @@ class DiscogsClient:
         for item in self.user.wantlist:
             release = item.release
             artists = self._extract_artists(release.artists)
+            label, catalog_number = self._extract_label_info(release)
             yield Release(
                 id=release.id,
                 title=release.title,
@@ -168,6 +176,8 @@ class DiscogsClient:
                 year=release.year or 0,
                 folder_id=self.WANTLIST_FOLDER_ID,
                 folder_name=self.WANTLIST_FOLDER_NAME,
+                label=label,
+                catalog_number=catalog_number,
             )
 
     def get_release_tracks(self, release_id: int) -> list[Track]:
@@ -248,6 +258,27 @@ class DiscogsClient:
                 name = name[:idx]
 
         return name.strip()
+
+    def _extract_label_info(self, release) -> tuple[str, str]:
+        """Extract label name and catalog number from a release.
+
+        Args:
+            release: Discogs release object.
+
+        Returns:
+            Tuple of (label_name, catalog_number).
+        """
+        label = ""
+        catalog_number = ""
+
+        if hasattr(release, "labels") and release.labels:
+            first_label = release.labels[0]
+            if hasattr(first_label, "name"):
+                label = first_label.name
+            if hasattr(first_label, "catno"):
+                catalog_number = first_label.catno
+
+        return label, catalog_number
 
     def get_all_releases_with_tracks(
         self,

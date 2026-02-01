@@ -12,6 +12,7 @@ from song_automations.clients.discogs import DiscogsClient, Folder, Release, Tra
 from song_automations.config import Settings
 from song_automations.matching.fuzzy import (
     MatchResult,
+    ParsedTrack,
     parse_track_title,
     score_candidate,
     should_use_fallback,
@@ -392,6 +393,49 @@ class SyncEngine:
 
         return result
 
+    def _get_search_queries(
+        self,
+        parsed: ParsedTrack,
+        release: Release,
+    ) -> list[str]:
+        """Generate multiple search queries for better coverage.
+
+        Generates queries in order of specificity, from most specific
+        to most general. This helps find tracks that may be uploaded
+        under different naming conventions.
+
+        Args:
+            parsed: Parsed track with title components.
+            release: Parent release with label info.
+
+        Returns:
+            List of unique search queries to try.
+        """
+        queries: list[str] = []
+        seen: set[str] = set()
+
+        def add_query(query: str) -> None:
+            normalized = query.lower().strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                queries.append(query)
+
+        add_query(parsed.search_query)
+
+        if parsed.version:
+            add_query(parsed.fallback_query)
+
+        if release.label:
+            add_query(f"{release.label} {parsed.base_title}")
+
+        if parsed.remixer:
+            add_query(f"{parsed.remixer} {parsed.base_title}")
+
+        add_query(parsed.base_title)
+
+        max_queries = self._settings.max_search_queries
+        return queries[:max_queries]
+
     def _find_track_match(
         self,
         track: Track,
@@ -429,10 +473,12 @@ class SyncEngine:
 
         parsed = parse_track_title(track.title, track.artist)
 
-        search_results = playlist_client.search_tracks(parsed.search_query, limit=10)
-
-        if not search_results and should_use_fallback(parsed):
-            search_results = playlist_client.search_tracks(parsed.fallback_query, limit=10)
+        if destination == "soundcloud":
+            search_results = self._multi_query_search(parsed, release, playlist_client)
+        else:
+            search_results = playlist_client.search_tracks(parsed.search_query, limit=10)
+            if not search_results and should_use_fallback(parsed):
+                search_results = playlist_client.search_tracks(parsed.fallback_query, limit=10)
 
         if not search_results:
             self._state.save_matched_track(
@@ -464,7 +510,7 @@ class SyncEngine:
                 raw_plays = result_track.playback_count or 0
                 popularity = int(math.log10(raw_plays + 1) / 6 * 100)
                 max_pop = 100
-                is_verified = False
+                is_verified = search_result.is_verified
 
             total_score, artist_score, title_score, verified_bonus, pop_score = score_candidate(
                 parsed_track=parsed,
@@ -478,6 +524,9 @@ class SyncEngine:
                 verified_weight=self._settings.verified_weight,
                 popularity_weight=self._settings.popularity_weight,
                 version_bonus_weight=self._settings.version_match_bonus,
+                version_penalty_weight=self._settings.version_penalty_weight,
+                label=release.label,
+                label_bonus_weight=self._settings.label_bonus_weight,
             )
 
             if total_score > best_score:
@@ -528,6 +577,40 @@ class SyncEngine:
             match_confidence=best_score,
         )
         return None
+
+    def _multi_query_search(
+        self,
+        parsed: ParsedTrack,
+        release: Release,
+        playlist_client: PlaylistClient,
+    ) -> list:
+        """Search using multiple queries and deduplicate results.
+
+        Tries each query in order and collects unique results.
+        Deduplication is based on track ID to avoid scoring
+        the same track multiple times.
+
+        Args:
+            parsed: Parsed track info.
+            release: Parent release with label info.
+            playlist_client: Platform client.
+
+        Returns:
+            List of unique search results from all queries.
+        """
+        queries = self._get_search_queries(parsed, release)
+        all_results: list = []
+        seen_ids: set = set()
+
+        for query in queries:
+            results = playlist_client.search_tracks(query, limit=10)
+            for result in results:
+                track_id = result.track.id
+                if track_id not in seen_ids:
+                    seen_ids.add(track_id)
+                    all_results.append(result)
+
+        return all_results
 
     def _cleanup_deleted_folders(
         self,
