@@ -208,36 +208,35 @@ class DiscogsClient:
         """
         try:
             release = self._client.release(release_id)
+            tracks = []
+
+            release_artist = self._extract_artists(release.artists)
+
+            for track in release.tracklist:
+                if not track.position or track.position.lower() in ("video", "dvd"):
+                    continue
+
+                if hasattr(track, "artists") and track.artists:
+                    track_artist = self._extract_artists(track.artists)
+                else:
+                    track_artist = release_artist
+
+                tracks.append(
+                    Track(
+                        position=track.position,
+                        title=track.title,
+                        artist=track_artist,
+                        duration=track.duration or "",
+                        release_id=release_id,
+                        release_title=release.title,
+                    )
+                )
+
+            return tracks
         except HTTPError as e:
             if e.status_code == 404:
                 return []
             raise
-
-        tracks = []
-
-        release_artist = self._extract_artists(release.artists)
-
-        for track in release.tracklist:
-            if not track.position or track.position.lower() in ("video", "dvd"):
-                continue
-
-            if hasattr(track, "artists") and track.artists:
-                track_artist = self._extract_artists(track.artists)
-            else:
-                track_artist = release_artist
-
-            tracks.append(
-                Track(
-                    position=track.position,
-                    title=track.title,
-                    artist=track_artist,
-                    duration=track.duration or "",
-                    release_id=release_id,
-                    release_title=release.title,
-                )
-            )
-
-        return tracks
 
     def _extract_artists(self, artists: list) -> str:
         """Extract a clean artist name from Discogs artist list.
