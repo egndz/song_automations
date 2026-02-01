@@ -141,45 +141,57 @@ class DiscogsClient:
 
         Yields:
             Release objects for each release in the folder.
+            Skips releases that have been deleted on Discogs.
         """
         folder = self._get_folder_by_id(folder_id)
         if folder is None:
             return
         for item in folder.releases:
             release = item.release
-            artists = self._extract_artists(release.artists)
-            label, catalog_number = self._extract_label_info(release)
-            yield Release(
-                id=release.id,
-                title=release.title,
-                artist=artists,
-                year=release.year or 0,
-                folder_id=folder_id,
-                folder_name=folder.name,
-                label=label,
-                catalog_number=catalog_number,
-            )
+            try:
+                artists = self._extract_artists(release.artists)
+                label, catalog_number = self._extract_label_info(release)
+                yield Release(
+                    id=release.id,
+                    title=release.title,
+                    artist=artists,
+                    year=release.year or 0,
+                    folder_id=folder_id,
+                    folder_name=folder.name,
+                    label=label,
+                    catalog_number=catalog_number,
+                )
+            except HTTPError as e:
+                if e.status_code == 404:
+                    continue
+                raise
 
     def get_wantlist_releases(self) -> Iterator[Release]:
         """Get all releases in the user's wantlist.
 
         Yields:
             Release objects for each release in the wantlist.
+            Skips releases that have been deleted on Discogs.
         """
         for item in self.user.wantlist:
             release = item.release
-            artists = self._extract_artists(release.artists)
-            label, catalog_number = self._extract_label_info(release)
-            yield Release(
-                id=release.id,
-                title=release.title,
-                artist=artists,
-                year=release.year or 0,
-                folder_id=self.WANTLIST_FOLDER_ID,
-                folder_name=self.WANTLIST_FOLDER_NAME,
-                label=label,
-                catalog_number=catalog_number,
-            )
+            try:
+                artists = self._extract_artists(release.artists)
+                label, catalog_number = self._extract_label_info(release)
+                yield Release(
+                    id=release.id,
+                    title=release.title,
+                    artist=artists,
+                    year=release.year or 0,
+                    folder_id=self.WANTLIST_FOLDER_ID,
+                    folder_name=self.WANTLIST_FOLDER_NAME,
+                    label=label,
+                    catalog_number=catalog_number,
+                )
+            except HTTPError as e:
+                if e.status_code == 404:
+                    continue
+                raise
 
     def get_release_tracks(self, release_id: int) -> list[Track]:
         """Fetch the tracklist for a specific release.
