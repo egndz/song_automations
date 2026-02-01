@@ -378,6 +378,20 @@ class SyncEngine:
 
             tracks = self._discogs.get_release_tracks(release.id)
 
+            if not tracks:
+                self._state.log_sync_event(
+                    sync_id=sync_id,
+                    destination=destination,
+                    folder_id=folder.id,
+                    folder_name=folder.name,
+                    event_type="api_error",
+                    status="warning",
+                    message=f"Release '{release.artist} - {release.title}' not found (deleted or merged on Discogs)",
+                    details={"release_id": release.id, "release_url": f"https://www.discogs.com/release/{release.id}"},
+                )
+                progress.remove_task(task)
+                continue
+
             for track in tracks:
                 match_result = self._find_track_match(
                     track=track,

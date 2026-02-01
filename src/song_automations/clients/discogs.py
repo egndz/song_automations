@@ -4,6 +4,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 import discogs_client
+from discogs_client.exceptions import HTTPError
 
 from song_automations.config import Settings
 
@@ -188,8 +189,18 @@ class DiscogsClient:
 
         Returns:
             List of Track objects for all tracks on the release.
+            Returns empty list if release is deleted or not accessible.
+
+        Raises:
+            HTTPError: For non-404 HTTP errors.
         """
-        release = self._client.release(release_id)
+        try:
+            release = self._client.release(release_id)
+        except HTTPError as e:
+            if e.status_code == 404:
+                return []
+            raise
+
         tracks = []
 
         release_artist = self._extract_artists(release.artists)
