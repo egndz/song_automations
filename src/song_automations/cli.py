@@ -487,5 +487,32 @@ def review(
     uvicorn.run(app_instance, host=host, port=port, log_level="warning")
 
 
+@app.command("cleanup-logs")
+def cleanup_logs(
+    days: Annotated[
+        int,
+        typer.Option(
+            "--days",
+            "-d",
+            help="Remove logs older than this many days.",
+        ),
+    ] = 90,
+) -> None:
+    """Remove old sync logs to save disk space."""
+    settings = get_settings()
+
+    if not settings.db_path.exists():
+        console.print("[yellow]No sync data found. Nothing to clean up.[/yellow]")
+        return
+
+    state_tracker = StateTracker(settings.db_path)
+    deleted = state_tracker.cleanup_old_logs(days)
+
+    if deleted > 0:
+        console.print(f"[green]Deleted {deleted} log entries older than {days} days.[/green]")
+    else:
+        console.print(f"[dim]No log entries older than {days} days found.[/dim]")
+
+
 if __name__ == "__main__":
     app()
