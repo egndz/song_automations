@@ -55,6 +55,7 @@ def _run_sync(
     exclude_wantlist: bool,
     dry_run: bool,
     force_rematch: bool = False,
+    force_rematch_all: bool = False,
 ) -> SyncResult:
     """Execute sync for a platform.
 
@@ -64,7 +65,8 @@ def _run_sync(
         folder_names: Optional folder filter.
         exclude_wantlist: Whether to exclude wantlist.
         dry_run: If True, don't make changes.
-        force_rematch: If True, clear match cache before syncing.
+        force_rematch: If True, clear unreviewed match cache before syncing.
+        force_rematch_all: If True, clear ALL matches including reviewed ones.
 
     Returns:
         SyncResult with operation details.
@@ -72,9 +74,12 @@ def _run_sync(
     discogs_client = DiscogsClient(settings)
     state_tracker = StateTracker(settings.db_path)
 
-    if force_rematch:
-        count = state_tracker.clear_matched_tracks(platform)
-        console.print(f"[yellow]Cleared {count} cached matches for {platform}[/yellow]\n")
+    if force_rematch_all:
+        count = state_tracker.clear_matched_tracks(platform, preserve_reviewed=False)
+        console.print(f"[yellow]Cleared ALL {count} cached matches for {platform} (including reviewed)[/yellow]\n")
+    elif force_rematch:
+        count = state_tracker.clear_matched_tracks(platform, preserve_reviewed=True)
+        console.print(f"[yellow]Cleared {count} unreviewed matches for {platform} (reviewed tracks preserved)[/yellow]\n")
 
     engine = SyncEngine(settings, discogs_client, state_tracker, console)
 
@@ -156,7 +161,14 @@ def sync_spotify(
         bool,
         typer.Option(
             "--force-rematch",
-            help="Clear match cache and re-search all tracks.",
+            help="Re-search unreviewed tracks (preserves approved/rejected).",
+        ),
+    ] = False,
+    force_rematch_all: Annotated[
+        bool,
+        typer.Option(
+            "--force-rematch-all",
+            help="Re-search ALL tracks including reviewed ones.",
         ),
     ] = False,
 ) -> None:
@@ -179,7 +191,7 @@ def sync_spotify(
     if dry_run:
         console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
 
-    result = _run_sync(settings, "spotify", folder_names, exclude_wantlist, dry_run, force_rematch)
+    result = _run_sync(settings, "spotify", folder_names, exclude_wantlist, dry_run, force_rematch, force_rematch_all)
     _print_sync_result(result, dry_run)
 
 
@@ -219,7 +231,14 @@ def sync_soundcloud(
         bool,
         typer.Option(
             "--force-rematch",
-            help="Clear match cache and re-search all tracks.",
+            help="Re-search unreviewed tracks (preserves approved/rejected).",
+        ),
+    ] = False,
+    force_rematch_all: Annotated[
+        bool,
+        typer.Option(
+            "--force-rematch-all",
+            help="Re-search ALL tracks including reviewed ones.",
         ),
     ] = False,
 ) -> None:
@@ -242,7 +261,7 @@ def sync_soundcloud(
     if dry_run:
         console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
 
-    result = _run_sync(settings, "soundcloud", folder_names, exclude_wantlist, dry_run, force_rematch)
+    result = _run_sync(settings, "soundcloud", folder_names, exclude_wantlist, dry_run, force_rematch, force_rematch_all)
     _print_sync_result(result, dry_run)
 
 
@@ -275,7 +294,14 @@ def sync_all(
         bool,
         typer.Option(
             "--force-rematch",
-            help="Clear match cache and re-search all tracks.",
+            help="Re-search unreviewed tracks (preserves approved/rejected).",
+        ),
+    ] = False,
+    force_rematch_all: Annotated[
+        bool,
+        typer.Option(
+            "--force-rematch-all",
+            help="Re-search ALL tracks including reviewed ones.",
         ),
     ] = False,
 ) -> None:
@@ -289,6 +315,7 @@ def sync_all(
         dry_run=dry_run,
         min_confidence=None,
         force_rematch=force_rematch,
+        force_rematch_all=force_rematch_all,
     )
 
     console.print("\n[bold cyan]--- SoundCloud ---[/bold cyan]")
@@ -298,6 +325,7 @@ def sync_all(
         dry_run=dry_run,
         min_confidence=None,
         force_rematch=force_rematch,
+        force_rematch_all=force_rematch_all,
     )
 
 

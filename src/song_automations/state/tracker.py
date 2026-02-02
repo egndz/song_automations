@@ -618,23 +618,36 @@ class StateTracker:
             else:
                 conn.execute("DELETE FROM missing_tracks")
 
-    def clear_matched_tracks(self, destination: Destination | None = None) -> int:
+    def clear_matched_tracks(
+        self,
+        destination: Destination | None = None,
+        preserve_reviewed: bool = True,
+    ) -> int:
         """Clear matched tracks cache to force re-matching.
 
         Args:
             destination: Optional filter by destination (spotify/soundcloud).
+            preserve_reviewed: If True, keep tracks that have been approved or
+                rejected. Only clears pending/unreviewed tracks.
 
         Returns:
             Number of records deleted.
         """
         with self._get_connection() as conn:
+            if preserve_reviewed:
+                review_filter = "AND (review_status IS NULL OR review_status = 'pending')"
+            else:
+                review_filter = ""
+
             if destination:
                 cursor = conn.execute(
-                    "DELETE FROM matched_tracks WHERE destination = ?",
+                    f"DELETE FROM matched_tracks WHERE destination = ? {review_filter}",
                     (destination,),
                 )
             else:
-                cursor = conn.execute("DELETE FROM matched_tracks")
+                cursor = conn.execute(
+                    f"DELETE FROM matched_tracks WHERE 1=1 {review_filter}"
+                )
             return cursor.rowcount
 
     def get_matched_track_ids(
