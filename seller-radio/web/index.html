@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Seller Radio</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<a class="skip-link" href="#tracklist">Skip to the crate</a>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-text">
+      <strong>Seller Radio</strong>
+      <span class="brand-sub">crate digging on autoplay</span>
+    </span>
+  </div>
+  <div class="topbar-right">
+    <span id="server-badge" class="badge badge-off" role="status">offline</span>
+    <span id="status" class="status" role="status" aria-live="polite">loading crate</span>
+  </div>
+</header>
+
+<main class="layout">
+
+  <section class="deck" aria-label="Player">
+
+    <div class="now" aria-live="polite">
+      <img id="now-thumb" class="now-thumb" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" alt="">
+      <div class="now-body">
+        <p id="now-artist" class="now-artist">No artist</p>
+        <h1 id="now-title" class="now-title">Nothing queued</h1>
+        <p id="now-label" class="now-label">No label</p>
+        <p id="now-meta" class="now-meta">Load a crate to start digging</p>
+        <div class="now-actions">
+          <a id="now-link" class="linkbtn" href="https://www.discogs.com" target="_blank" rel="noopener noreferrer">Open on Discogs</a>
+          <button id="want-btn" class="linkbtn wantbtn" type="button">Add to wantlist</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="video-wrap" class="video-wrap video-tucked">
+      <div id="player" class="player-mount"></div>
+    </div>
+
+    <div class="seekrow">
+      <span id="elapsed" class="time">0:00</span>
+      <input id="seek" class="seek" type="range" min="0" max="1000" value="0" step="1" aria-label="Seek position">
+      <span id="duration" class="time">0:00</span>
+    </div>
+
+    <div class="transport" role="group" aria-label="Transport controls">
+      <button id="prev" class="tbtn" type="button" aria-label="Previous track">Prev</button>
+      <button id="play-pause" class="tbtn tbtn-primary" type="button" aria-label="Play or pause">Play</button>
+      <button id="next" class="tbtn" type="button" aria-label="Next track">Next</button>
+      <button id="shuffle" class="tbtn tbtn-toggle" type="button" aria-pressed="false">Shuffle</button>
+      <button id="toggle-video" class="tbtn tbtn-toggle" type="button" aria-pressed="false" aria-controls="video-wrap">Video</button>
+      <span class="queue">
+        <span id="queue-pos">0</span><span class="queue-sep">/</span><span id="queue-len">0</span>
+      </span>
+    </div>
+
+    <p class="shortcuts">
+      <span class="key">space</span> play or pause
+      <span class="key">left arrow</span> previous
+      <span class="key">right arrow</span> next
+    </p>
+
+  </section>
+
+  <section class="filters" aria-label="Filters">
+
+    <div class="filters-head">
+      <label class="fld fld-wide" for="f-search">
+        <span class="fld-label">Search</span>
+        <input id="f-search" type="search" placeholder="artist, title, catalogue number" autocomplete="off">
+      </label>
+      <span id="filter-count" class="filter-count">0 tracks</span>
+    </div>
+
+    <details class="fset" open>
+      <summary class="fset-title">Catalogue</summary>
+      <div class="fgrid">
+        <label class="fld" for="f-genre">
+          <span class="fld-label">Genre</span>
+          <select id="f-genre" multiple size="5"></select>
+        </label>
+        <label class="fld" for="f-style">
+          <span class="fld-label">Style</span>
+          <select id="f-style" multiple size="5"></select>
+        </label>
+        <label class="fld" for="f-country">
+          <span class="fld-label">Country</span>
+          <select id="f-country" multiple size="5"></select>
+        </label>
+        <label class="fld" for="f-label">
+          <span class="fld-label">Label</span>
+          <select id="f-label" multiple size="5"></select>
+        </label>
+        <label class="fld" for="f-format">
+          <span class="fld-label">Format</span>
+          <select id="f-format" multiple size="5"></select>
+        </label>
+        <div class="fld">
+          <span class="fld-label">Year range</span>
+          <div class="fpair">
+            <input id="f-year-from" type="number" inputmode="numeric" min="1900" max="2100" step="1" placeholder="from" aria-label="Year from">
+            <span class="dash" aria-hidden="true">to</span>
+            <input id="f-year-to" type="number" inputmode="numeric" min="1900" max="2100" step="1" placeholder="to" aria-label="Year to">
+          </div>
+        </div>
+      </div>
+      <p class="fset-note">Exclude anything matching the picks below.</p>
+      <div class="fgrid fgrid-ex">
+        <label class="fld" for="f-exclude-genre">
+          <span class="fld-label">Exclude genre</span>
+          <select id="f-exclude-genre" multiple size="4"></select>
+        </label>
+        <label class="fld" for="f-exclude-style">
+          <span class="fld-label">Exclude style</span>
+          <select id="f-exclude-style" multiple size="4"></select>
+        </label>
+        <label class="fld" for="f-exclude-country">
+          <span class="fld-label">Exclude country</span>
+          <select id="f-exclude-country" multiple size="4"></select>
+        </label>
+        <label class="fld" for="f-exclude-label">
+          <span class="fld-label">Exclude label</span>
+          <select id="f-exclude-label" multiple size="4"></select>
+        </label>
+        <label class="fld" for="f-exclude-format">
+          <span class="fld-label">Exclude format</span>
+          <select id="f-exclude-format" multiple size="4"></select>
+        </label>
+      </div>
+    </details>
+
+    <details class="fset" open>
+      <summary class="fset-title">Marketplace</summary>
+      <div class="fgrid">
+        <label class="fld" for="f-seller">
+          <span class="fld-label">Seller</span>
+          <select id="f-seller" multiple size="4"></select>
+        </label>
+        <div class="fld">
+          <span class="fld-label">Price</span>
+          <div class="fpair">
+            <input id="f-price-min" type="number" inputmode="decimal" min="0" step="0.5" placeholder="min" aria-label="Minimum price">
+            <span class="dash" aria-hidden="true">to</span>
+            <input id="f-price-max" type="number" inputmode="decimal" min="0" step="0.5" placeholder="max" aria-label="Maximum price">
+          </div>
+        </div>
+        <label class="fld" for="f-media-grade">
+          <span class="fld-label">Media grade or better</span>
+          <select id="f-media-grade">
+            <option value="">Any</option>
+            <option value="P">P</option>
+            <option value="F">F</option>
+            <option value="G">G</option>
+            <option value="G+">G+</option>
+            <option value="VG">VG</option>
+            <option value="VG+">VG+</option>
+            <option value="NM">NM</option>
+            <option value="M">M</option>
+          </select>
+        </label>
+        <label class="fld" for="f-sleeve-grade">
+          <span class="fld-label">Sleeve grade or better</span>
+          <select id="f-sleeve-grade">
+            <option value="">Any</option>
+            <option value="P">P</option>
+            <option value="F">F</option>
+            <option value="G">G</option>
+            <option value="G+">G+</option>
+            <option value="VG">VG</option>
+            <option value="VG+">VG+</option>
+            <option value="NM">NM</option>
+            <option value="M">M</option>
+          </select>
+        </label>
+        <label class="fld" for="f-ships-from">
+          <span class="fld-label">Ships from</span>
+          <select id="f-ships-from" multiple size="4"></select>
+        </label>
+        <label class="fld" for="f-source">
+          <span class="fld-label">Source</span>
+          <select id="f-source">
+            <option value="">Any</option>
+            <option value="seller">Seller inventory</option>
+            <option value="search">Search bank</option>
+          </select>
+        </label>
+      </div>
+    </details>
+
+    <details class="fset" open>
+      <summary class="fset-title">Community and personal</summary>
+      <div class="fgrid">
+        <label class="fld" for="f-want-ratio">
+          <span class="fld-label">Min want ratio</span>
+          <input id="f-want-ratio" type="number" inputmode="decimal" min="0" step="0.1" placeholder="0.0">
+        </label>
+        <label class="fld" for="f-rating-min">
+          <span class="fld-label">Min rating</span>
+          <input id="f-rating-min" type="number" inputmode="decimal" min="0" max="5" step="0.1" placeholder="0.0">
+        </label>
+        <label class="fld" for="f-have-min">
+          <span class="fld-label">Min have</span>
+          <input id="f-have-min" type="number" inputmode="numeric" min="0" step="1" placeholder="0">
+        </label>
+        <label class="fld fld-check" for="f-exclude-owned">
+          <input id="f-exclude-owned" type="checkbox">
+          <span class="fld-label">Hide what I own</span>
+        </label>
+        <label class="fld fld-check" for="f-wantlist-only">
+          <input id="f-wantlist-only" type="checkbox">
+          <span class="fld-label">Wantlist only</span>
+        </label>
+      </div>
+    </details>
+
+    <div class="fbar">
+      <button id="apply-filters" class="fbtn fbtn-primary" type="button">Apply</button>
+      <button id="reset-filters" class="fbtn" type="button">Reset</button>
+    </div>
+
+  </section>
+
+  <section class="crate" aria-label="Queue">
+    <h2 class="crate-title">The crate</h2>
+    <ol id="tracklist" class="tracklist" tabindex="-1"></ol>
+  </section>
+
+</main>
+
+<script src="crate.js" onerror="window.CRATE_LOAD_ERROR = true;"></script>
+<script src="https://www.youtube.com/iframe_api" onerror="window.YT_LOAD_ERROR = true;"></script>
+<script src="app.js"></script>
+
+</body>
+</html>
