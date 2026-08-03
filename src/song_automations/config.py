@@ -12,6 +12,11 @@ class Settings(BaseSettings):
 
     Args:
         discogs_user_token: Personal access token from Discogs developer settings.
+        discogs_consumer_key: Consumer key of the registered Discogs application.
+        discogs_consumer_secret: Consumer secret of the registered Discogs application.
+        discogs_request_token_url: Endpoint issuing OAuth request tokens.
+        discogs_authorize_url: Endpoint where the user authorizes the application.
+        discogs_access_token_url: Endpoint exchanging a request token for an access token.
         spotify_client_id: Spotify application client ID.
         spotify_client_secret: Spotify application client secret.
         spotify_redirect_uri: OAuth redirect URI for Spotify authentication.
@@ -35,6 +40,26 @@ class Settings(BaseSettings):
     discogs_user_token: str = Field(
         default="",
         description="Discogs personal access token",
+    )
+    discogs_consumer_key: str = Field(
+        default="",
+        description="Discogs application consumer key for OAuth 1.0a",
+    )
+    discogs_consumer_secret: str = Field(
+        default="",
+        description="Discogs application consumer secret for OAuth 1.0a",
+    )
+    discogs_request_token_url: str = Field(
+        default="https://api.discogs.com/oauth/request_token",
+        description="Discogs OAuth request token endpoint",
+    )
+    discogs_authorize_url: str = Field(
+        default="https://www.discogs.com/oauth/authorize",
+        description="Discogs OAuth authorization endpoint",
+    )
+    discogs_access_token_url: str = Field(
+        default="https://api.discogs.com/oauth/access_token",
+        description="Discogs OAuth access token endpoint",
     )
 
     spotify_client_id: str = Field(
