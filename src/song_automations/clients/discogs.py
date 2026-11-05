@@ -272,6 +272,35 @@ class DiscogsClient:
                 return []
             raise
 
+    def search_vinyl(self, artist: str, title: str) -> list[dict]:
+        """Searches vinyl releases holding a track.
+
+        Args:
+            artist: Artist name.
+            title: Track title.
+
+        Returns:
+            Raw search results.
+        """
+        results = self._client.search(artist=artist, track=title, type="release", format="Vinyl")
+        return [dict(item.data) for item in results.page(1)]
+
+    def get_wantlist_ids(self) -> set[int]:
+        """Lists the release ids on the wantlist.
+
+        Returns:
+            Release ids.
+        """
+        return {item.id for item in self.user.wantlist}
+
+    def add_to_wantlist(self, release_id: int) -> None:
+        """Adds a release to the wantlist.
+
+        Args:
+            release_id: Discogs release id.
+        """
+        self.user.wantlist.add(release_id)
+
     def get_artist_names(self, artist_id: int) -> tuple[str, ...]:
         """Lists the other names of an artist, used only when a track found no match.
 
