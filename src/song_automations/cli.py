@@ -1,5 +1,6 @@
 """Command-line interface for song-automations."""
 
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -8,10 +9,13 @@ from rich.table import Table
 
 from song_automations import __version__
 from song_automations.clients.discogs import DiscogsClient
+from song_automations.clients.http import RateLimitError
 from song_automations.clients.soundcloud import SoundCloudClient
 from song_automations.clients.spotify import SpotifyClient
 from song_automations.config import Settings, get_settings
+from song_automations.errors import RateLimitedError, ReauthRequiredError
 from song_automations.logging import setup_logging
+from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
 from song_automations.state.tracker import StateTracker
 from song_automations.sync.engine import OperationType, SyncEngine, SyncResult
@@ -99,6 +103,30 @@ def _run_sync(
             folder_names=folder_names,
             dry_run=dry_run,
         )
+
+
+def _guarded_sync(*args, **kwargs) -> SyncResult:
+    """Runs a sync and turns limits and expired logins into a plain message.
+
+    Args:
+        *args: Passed to _run_sync.
+        **kwargs: Passed to _run_sync.
+
+    Returns:
+        SyncResult with operation details.
+
+    Raises:
+        typer.Exit: When the platform refuses the run.
+    """
+    try:
+        return _run_sync(*args, **kwargs)
+    except (RateLimitedError, ReauthRequiredError) as error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(2) from error
+    except RateLimitError as error:
+        limited = RateLimitedError("SoundCloud", error.retry_after)
+        console.print(f"[red]{limited}[/red]")
+        raise typer.Exit(2) from error
 
 
 def version_callback(value: bool) -> None:
@@ -191,7 +219,7 @@ def sync_spotify(
     if dry_run:
         console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
 
-    result = _run_sync(settings, "spotify", folder_names, exclude_wantlist, dry_run, force_rematch, force_rematch_all)
+    result = _guarded_sync(settings, "spotify", folder_names, exclude_wantlist, dry_run, force_rematch, force_rematch_all)
     _print_sync_result(result, dry_run)
 
 
@@ -261,7 +289,7 @@ def sync_soundcloud(
     if dry_run:
         console.print("[yellow]DRY RUN - No changes will be made[/yellow]\n")
 
-    result = _run_sync(settings, "soundcloud", folder_names, exclude_wantlist, dry_run, force_rematch, force_rematch_all)
+    result = _guarded_sync(settings, "soundcloud", folder_names, exclude_wantlist, dry_run, force_rematch, force_rematch_all)
     _print_sync_result(result, dry_run)
 
 
@@ -360,6 +388,30 @@ def status() -> None:
         console.print("[yellow]No folder mappings found. Run a sync first.[/yellow]")
     else:
         console.print(table)
+
+
+@report_app.command("matches")
+def report_matches(
+    destination: Annotated[
+        str | None,
+        typer.Option("--destination", "-d", help="spotify or soundcloud."),
+    ] = None,
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="CSV file to write."),
+    ] = None,
+) -> None:
+    """Write every matching decision with its evidence, weakest first."""
+    settings = get_settings()
+    state_tracker = StateTracker(settings.db_path)
+    path = output or settings.data_dir / "reports" / "matches.csv"
+    summary = write_match_report(state_tracker, path, destination)
+    for platform, counts in summary.items():
+        total = sum(counts.values())
+        found = total - counts.get("missing", 0)
+        share = 100 * found / total if total else 0
+        console.print(f"[bold]{platform}[/bold]: {found}/{total} matched ({share:.1f}%) {dict(counts)}")
+    console.print(f"Report written to {path}")
 
 
 @report_app.command("missing")

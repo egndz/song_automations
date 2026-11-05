@@ -1,9 +1,10 @@
 """Core sync engine for playlist synchronization."""
 
-import math
+import re
 import traceback
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Protocol
 
@@ -12,16 +13,40 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from song_automations.clients.discogs import DiscogsClient, Folder, Release, Track
 from song_automations.config import Settings
-from song_automations.matching.fuzzy import (
-    MatchResult,
-    ParsedTrack,
-    parse_track_title,
-    score_candidate,
-    should_use_fallback,
+from song_automations.matching.matcher import Match, SourceTrack, Tier
+from song_automations.matching.resolver import (
+    SoundCloudSearcher,
+    SpotifySearcher,
+    resolve_release,
 )
 from song_automations.state.tracker import Destination, StateTracker
 
-HIGH_CONFIDENCE_THRESHOLD = 0.95
+MISSING_RETRY_DAYS = 7
+
+
+def _duration_ms(text: str) -> int | None:
+    """Reads a Discogs duration.
+
+    Args:
+        text: Duration such as 6:32.
+
+    Returns:
+        Milliseconds, or None when absent or malformed.
+    """
+    found = re.match(r"^(\d+):(\d{2})$", (text or "").strip())
+    return (int(found[1]) * 60 + int(found[2])) * 1000 if found else None
+
+
+def _first_artist(track: Track) -> str:
+    """Picks the artist name worth typing into a search box.
+
+    Args:
+        track: Discogs track.
+
+    Returns:
+        First credited name.
+    """
+    return track.artist_names[0] if track.artist_names else track.artist
 
 
 class OperationType(Enum):
@@ -95,6 +120,8 @@ class PlaylistClient(Protocol):
     def add_tracks_to_playlist(self, playlist_id, track_ids: list) -> None: ...
 
     def remove_tracks_from_playlist(self, playlist_id, track_ids: list) -> None: ...
+
+    def search_raw(self, query: str, *args, **kwargs) -> list: ...
 
 
 class SyncEngine:
@@ -203,6 +230,7 @@ class SyncEngine:
                 task = progress.add_task("Fetching Discogs folders...", total=None)
 
                 folders = self._discogs.get_folders()
+                all_folder_ids = {f.id for f in folders} | {DiscogsClient.WANTLIST_FOLDER_ID}
                 if folder_names:
                     folders = [f for f in folders if f.name in folder_names]
 
@@ -246,7 +274,7 @@ class SyncEngine:
                 deleted_result = self._cleanup_deleted_folders(
                     playlist_client=playlist_client,
                     destination=destination,
-                    current_folder_ids={f.id for f in folders},
+                    current_folder_ids=all_folder_ids,
                     dry_run=dry_run,
                     sync_id=sync_id,
                 )
@@ -367,8 +395,8 @@ class SyncEngine:
                 )
             result.playlists_created += 1
 
-        desired_track_ids: set[str] = set()
-        tracks_to_add: list[tuple[str, float, bool]] = []
+        searcher = self._make_searcher(playlist_client, destination)
+        desired: dict[str, None] = {}
 
         for release in releases:
             task = progress.add_task(
@@ -392,23 +420,13 @@ class SyncEngine:
                 progress.remove_task(task)
                 continue
 
-            for track in tracks:
-                match_result = self._find_track_match(
-                    track=track,
-                    release=release,
-                    playlist_client=playlist_client,
-                    destination=destination,
-                    folder_id=folder.id,
-                    sync_id=sync_id,
-                )
-
-                if match_result:
-                    track_id = str(match_result.track_id)
-                    desired_track_ids.add(track_id)
-
-                    flagged = match_result.confidence < self._settings.high_confidence
-                    tracks_to_add.append((track_id, match_result.confidence, flagged))
-
+            for track, track_id, confidence, tier in self._match_release(
+                release, tracks, searcher, destination
+            ):
+                if track_id:
+                    desired[track_id] = None
+                    flagged = tier != Tier.EXACT.name.lower()
+                    result.tracks_flagged += flagged
                     result.operations.append(
                         SyncOperation(
                             operation_type=OperationType.ADD_TRACK,
@@ -416,13 +434,10 @@ class SyncEngine:
                             playlist_name=playlist_name,
                             track_title=track.title,
                             track_artist=track.artist,
-                            confidence=match_result.confidence,
+                            confidence=confidence,
                             flagged=flagged,
                         )
                     )
-
-                    if flagged:
-                        result.tracks_flagged += 1
                 else:
                     result.tracks_missing += 1
                     self._state.save_missing_track(
@@ -435,319 +450,209 @@ class SyncEngine:
 
             progress.remove_task(task)
 
-        if playlist and not dry_run:
-            current_tracks = playlist_client.get_playlist_tracks(playlist.id)
+        if playlist:
+            self._apply_playlist(playlist, list(desired), playlist_client, destination, dry_run, result)
 
-            if destination == "spotify":
-                current_track_ids = {t.id for t in current_tracks}
-                ids_to_add = [
-                    tid for tid, _, _ in tracks_to_add if tid not in current_track_ids
-                ]
-                ids_to_remove = [tid for tid in current_track_ids if tid not in desired_track_ids]
-
-                if ids_to_add:
-                    uris = [f"spotify:track:{tid}" for tid in ids_to_add]
-                    playlist_client.add_tracks_to_playlist(playlist.id, uris)
-                    result.tracks_added += len(ids_to_add)
-
-                if ids_to_remove:
-                    uris = [f"spotify:track:{tid}" for tid in ids_to_remove]
-                    playlist_client.remove_tracks_from_playlist(playlist.id, uris)
-                    result.tracks_removed += len(ids_to_remove)
-
-            else:
-                current_track_ids = {t.id for t in current_tracks}
-                int_desired = {int(tid) for tid in desired_track_ids}
-                ids_to_add = [int(tid) for tid, _, _ in tracks_to_add if int(tid) not in current_track_ids]
-                ids_to_remove = [tid for tid in current_track_ids if tid not in int_desired]
-
-                if ids_to_add:
-                    playlist_client.add_tracks_to_playlist(playlist.id, ids_to_add)
-                    result.tracks_added += len(ids_to_add)
-
-                if ids_to_remove:
-                    playlist_client.remove_tracks_from_playlist(playlist.id, ids_to_remove)
-                    result.tracks_removed += len(ids_to_remove)
-
-        self._state.update_folder_releases(folder.id, [r.id for r in releases])
+        if not dry_run:
+            self._state.update_folder_releases(folder.id, [r.id for r in releases])
 
         return result
 
-    def _get_search_queries(
-        self,
-        parsed: ParsedTrack,
-        release: Release,
-    ) -> list[str]:
-        """Generate multiple search queries for better coverage.
-
-        Generates queries in order of specificity, from most specific
-        to most general. This helps find tracks that may be uploaded
-        under different naming conventions.
+    def _make_searcher(self, playlist_client: PlaylistClient, destination: Destination):
+        """Builds the searcher of a platform.
 
         Args:
-            parsed: Parsed track with title components.
-            release: Parent release with label info.
+            playlist_client: Platform client.
+            destination: Target platform.
 
         Returns:
-            List of unique search queries to try.
+            The searcher.
         """
-        queries: list[str] = []
-        seen: set[str] = set()
+        if destination == "spotify":
+            return SpotifySearcher(playlist_client, self._state)
+        return SoundCloudSearcher(playlist_client, self._state)
 
-        def add_query(query: str) -> None:
-            normalized = query.lower().strip()
-            if normalized and normalized not in seen:
-                seen.add(normalized)
-                queries.append(query)
-
-        add_query(parsed.search_query)
-
-        if parsed.version:
-            add_query(parsed.fallback_query)
-
-        if release.label:
-            add_query(f"{release.label} {parsed.base_title}")
-
-        if parsed.remixer:
-            add_query(f"{parsed.remixer} {parsed.base_title}")
-
-        add_query(parsed.base_title)
-
-        max_queries = self._settings.max_search_queries
-        return queries[:max_queries]
-
-    def _find_track_match(
+    def _match_release(
         self,
-        track: Track,
         release: Release,
-        playlist_client: PlaylistClient,
+        tracks: list[Track],
+        searcher,
         destination: Destination,
-        folder_id: int,
-        sync_id: str,
-    ) -> MatchResult | None:
-        """Find a matching track on the target platform.
+    ) -> list[tuple[Track, str | None, float, str | None]]:
+        """Matches the tracks of a release, reusing stored decisions.
+
+        Args:
+            release: Parent release.
+            tracks: Tracks of the release.
+            searcher: Platform searcher.
+            destination: Target platform.
+
+        Returns:
+            For each track: the track, the chosen id, confidence and tier.
+        """
+        stored = {
+            track.position: self._state.get_cached_match(release.id, track.position, destination)
+            for track in tracks
+        }
+        known = {
+            position: row
+            for position, row in stored.items()
+            if row is not None and self._is_fresh(row)
+        }
+        pending = [track for track in tracks if track.position not in known]
+        outcomes: dict[str, tuple[str | None, float, str | None]] = {
+            position: (row.destination_track_id, row.match_confidence, row.match_tier or Tier.EXACT.name.lower())
+            for position, row in known.items()
+        }
+        if pending:
+            taken = {row.destination_track_id for row in known.values() if row.destination_track_id}
+            excluded = [
+                self._state.get_rejected_ids(release.id, track.position, destination) | taken
+                for track in pending
+            ]
+            matches = resolve_release(
+                searcher,
+                [self._to_source(track, release) for track in pending],
+                [_first_artist(track) for track in pending],
+                pending[0].release_artist,
+                release.title,
+                pending[0].labels,
+                excluded=excluded,
+                alias_lookup=lambda index: self._aliases(pending[index]),
+            )
+            for track, match in zip(pending, matches, strict=True):
+                self._save_decision(release, track, match, destination)
+                outcomes[track.position] = (
+                    (match.candidate.id, match.confidence, match.tier.name.lower())
+                    if match
+                    else (None, 0.0, None)
+                )
+        return [(track, *outcomes[track.position]) for track in tracks]
+
+    @staticmethod
+    def _is_fresh(row) -> bool:
+        """Decides whether a stored decision can be reused.
+
+        A found track or a reviewed one is kept. A track that was not found is
+        searched again after a week, because catalogues change.
+
+        Args:
+            row: Stored decision.
+
+        Returns:
+            True when the decision can be reused.
+        """
+        if row.destination_track_id:
+            return True
+        age = datetime.now() - row.searched_at
+        return age < timedelta(days=MISSING_RETRY_DAYS)
+
+    def _aliases(self, track: Track) -> tuple[str, ...]:
+        """Lists the other names of the artists of a track.
+
+        Args:
+            track: Discogs track.
+
+        Returns:
+            Other names, without repeats.
+        """
+        names: list[str] = []
+        for artist_id in track.artist_ids:
+            names += self._discogs.get_artist_names(artist_id)
+        return tuple(dict.fromkeys(names))
+
+    @staticmethod
+    def _to_source(track: Track, release: Release) -> SourceTrack:
+        """Prepares a Discogs track for matching.
 
         Args:
             track: Discogs track.
             release: Parent release.
-            playlist_client: Platform client.
-            destination: Target platform.
-            folder_id: Discogs folder ID.
-            sync_id: UUID identifying the sync run.
 
         Returns:
-            MatchResult if found, None otherwise.
+            The source track.
         """
-        cached = self._state.get_cached_match(release.id, track.position, destination)
-        if cached and cached.destination_track_id:
-            return MatchResult(
-                track_id=cached.destination_track_id,
-                track_uri="",
-                confidence=cached.match_confidence,
-                artist_score=0.0,
-                title_score=0.0,
-                verified_bonus=0.0,
-                popularity_score=0.0,
-                is_verified=False,
-                matched_title=cached.track_name,
-                matched_artist=cached.artist,
-            )
+        return SourceTrack(
+            artists=track.artist_names or (track.artist,),
+            title=track.title,
+            duration_ms=_duration_ms(track.duration),
+            release_title=release.title,
+            labels=track.labels,
+            remixers=track.remixers,
+        )
 
-        parsed = parse_track_title(track.title, track.artist)
+    def _save_decision(
+        self,
+        release: Release,
+        track: Track,
+        match: Match | None,
+        destination: Destination,
+    ) -> None:
+        """Stores a decision with its evidence.
 
-        if destination == "soundcloud":
-            search_results = self._multi_query_search(parsed, release, playlist_client)
-        else:
-            search_results = playlist_client.search_tracks(parsed.search_query, limit=10)
-            if not search_results and should_use_fallback(parsed):
-                search_results = playlist_client.search_tracks(parsed.fallback_query, limit=10)
-
-        if not search_results:
-            self._state.save_matched_track(
-                discogs_release_id=release.id,
-                track_position=track.position,
-                artist=track.artist,
-                track_name=track.title,
-                destination=destination,
-                destination_track_id=None,
-                match_confidence=0.0,
-            )
-            self._state.log_sync_event(
-                sync_id=sync_id,
-                destination=destination,
-                folder_id=folder_id,
-                event_type="track_missing",
-                status="warning",
-                track_artist=track.artist,
-                track_name=track.title,
-                message=f"No search results for '{track.artist} - {track.title}'",
-                details={"search_query": parsed.search_query, "release_id": release.id},
-            )
-            return None
-
-        best_match: MatchResult | None = None
-        best_score = 0.0
-
-        for search_result in search_results:
-            result_track = search_result.track
-
-            if destination == "spotify":
-                candidate_title = result_track.name
-                candidate_artist = result_track.artist
-                popularity = result_track.popularity
-                max_pop = 100
-                is_verified = search_result.is_verified
-            else:
-                candidate_title = result_track.title
-                candidate_artist = result_track.artist
-                raw_plays = result_track.playback_count or 0
-                popularity = int(math.log10(raw_plays + 1) / 6 * 100)
-                max_pop = 100
-                is_verified = search_result.is_verified
-
-            total_score, artist_score, title_score, verified_bonus, pop_score = score_candidate(
-                parsed_track=parsed,
-                candidate_title=candidate_title,
-                candidate_artist=candidate_artist,
-                is_verified=is_verified,
-                popularity=popularity,
-                max_popularity=max_pop,
-                artist_weight=self._settings.artist_weight,
-                title_weight=self._settings.title_weight,
-                verified_weight=self._settings.verified_weight,
-                popularity_weight=self._settings.popularity_weight,
-                version_bonus_weight=self._settings.version_match_bonus,
-                version_penalty_weight=self._settings.version_penalty_weight,
-                label=release.label,
-                label_bonus_weight=self._settings.label_bonus_weight,
-            )
-
-            if total_score > best_score:
-                best_score = total_score
-
-                if destination == "spotify":
-                    track_uri = result_track.uri
-                    track_id = result_track.id
-                else:
-                    track_uri = result_track.permalink_url
-                    track_id = result_track.id
-
-                best_match = MatchResult(
-                    track_id=track_id,
-                    track_uri=track_uri,
-                    confidence=total_score,
-                    artist_score=artist_score,
-                    title_score=title_score,
-                    verified_bonus=verified_bonus,
-                    popularity_score=pop_score,
-                    is_verified=search_result.is_verified,
-                    matched_title=candidate_title,
-                    matched_artist=candidate_artist,
-                )
-
-                if total_score >= HIGH_CONFIDENCE_THRESHOLD:
-                    break
-
-        if best_match and best_match.confidence >= self._settings.min_confidence:
-            self._state.save_matched_track(
-                discogs_release_id=release.id,
-                track_position=track.position,
-                artist=track.artist,
-                track_name=track.title,
-                destination=destination,
-                destination_track_id=str(best_match.track_id),
-                match_confidence=best_match.confidence,
-            )
-
-            is_flagged = best_match.confidence < self._settings.high_confidence
-            if is_flagged:
-                self._state.log_sync_event(
-                    sync_id=sync_id,
-                    destination=destination,
-                    folder_id=folder_id,
-                    event_type="track_flagged",
-                    status="warning",
-                    track_artist=track.artist,
-                    track_name=track.title,
-                    track_confidence=best_match.confidence,
-                    message=f"Low confidence match: '{best_match.matched_artist} - {best_match.matched_title}'",
-                    details={
-                        "matched_track_id": str(best_match.track_id),
-                        "artist_score": best_match.artist_score,
-                        "title_score": best_match.title_score,
-                    },
-                )
-            else:
-                self._state.log_sync_event(
-                    sync_id=sync_id,
-                    destination=destination,
-                    folder_id=folder_id,
-                    event_type="track_matched",
-                    status="success",
-                    track_artist=track.artist,
-                    track_name=track.title,
-                    track_confidence=best_match.confidence,
-                    message=f"Matched to '{best_match.matched_artist} - {best_match.matched_title}'",
-                )
-
-            return best_match
-
+        Args:
+            release: Parent release.
+            track: Discogs track.
+            match: Chosen match, or None.
+            destination: Target platform.
+        """
         self._state.save_matched_track(
             discogs_release_id=release.id,
             track_position=track.position,
             artist=track.artist,
             track_name=track.title,
             destination=destination,
-            destination_track_id=None,
-            match_confidence=best_score,
+            destination_track_id=match.candidate.id if match else None,
+            match_confidence=match.confidence if match else 0.0,
+            match_tier=match.tier.name.lower() if match else None,
+            matched_title=match.candidate.raw_title if match else None,
+            matched_uploader=match.candidate.uploader if match else None,
+            match_reading=match.reading.kind if match else None,
         )
-        self._state.log_sync_event(
-            sync_id=sync_id,
-            destination=destination,
-            folder_id=folder_id,
-            event_type="track_missing",
-            status="warning",
-            track_artist=track.artist,
-            track_name=track.title,
-            track_confidence=best_score,
-            message=f"Best match ({best_score:.0%}) below threshold ({self._settings.min_confidence:.0%})",
-            details={"best_score": best_score, "min_confidence": self._settings.min_confidence},
-        )
-        return None
 
-    def _multi_query_search(
+    def _apply_playlist(
         self,
-        parsed: ParsedTrack,
-        release: Release,
+        playlist,
+        desired: list[str],
         playlist_client: PlaylistClient,
-    ) -> list:
-        """Search using multiple queries and deduplicate results.
-
-        Tries each query in order and collects unique results.
-        Deduplication is based on track ID to avoid scoring
-        the same track multiple times.
+        destination: Destination,
+        dry_run: bool,
+        result: SyncResult,
+    ) -> None:
+        """Makes a playlist hold exactly the chosen tracks, each one once.
 
         Args:
-            parsed: Parsed track info.
-            release: Parent release with label info.
+            playlist: Target playlist.
+            desired: Chosen ids in playlist order, without repeats.
             playlist_client: Platform client.
-
-        Returns:
-            List of unique search results from all queries.
+            destination: Target platform.
+            dry_run: If True, only count what would change.
+            result: Result to update.
         """
-        queries = self._get_search_queries(parsed, release)
-        all_results: list = []
-        seen_ids: set = set()
-
-        for query in queries:
-            results = playlist_client.search_tracks(query, limit=10)
-            for result in results:
-                track_id = result.track.id
-                if track_id not in seen_ids:
-                    seen_ids.add(track_id)
-                    all_results.append(result)
-
-        return all_results
+        current = [str(track.id) for track in playlist_client.get_playlist_tracks(playlist.id)]
+        if current and not desired:
+            self._console.print(
+                f"  [yellow]Nothing matched for '{playlist.name}'; leaving the playlist alone.[/yellow]"
+            )
+            return
+        wanted = set(desired)
+        repeated = {track_id for track_id in current if current.count(track_id) > 1}
+        to_add = [track_id for track_id in desired if track_id not in set(current)]
+        to_remove = [track_id for track_id in dict.fromkeys(current) if track_id not in wanted]
+        result.tracks_added += len(to_add)
+        result.tracks_removed += len(to_remove)
+        if dry_run or not (to_add or to_remove or repeated):
+            return
+        if destination == "spotify":
+            uri = "spotify:track:{}".format
+            drop = to_remove + [track_id for track_id in repeated if track_id in wanted]
+            if drop:
+                playlist_client.remove_tracks_from_playlist(playlist.id, [uri(t) for t in drop])
+            restore = to_add + [track_id for track_id in repeated if track_id in wanted]
+            if restore:
+                playlist_client.add_tracks_to_playlist(playlist.id, [uri(t) for t in restore])
+        else:
+            playlist_client.set_playlist_tracks(playlist.id, [int(t) for t in desired])
 
     def _cleanup_deleted_folders(
         self,

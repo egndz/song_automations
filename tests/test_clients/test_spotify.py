@@ -1,11 +1,17 @@
 """Tests for Spotify client."""
 
+from unittest.mock import MagicMock
+
 import pytest
+from spotipy.exceptions import SpotifyException
+from spotipy.oauth2 import SpotifyOauthError
 
 from song_automations.clients.spotify import (
+    SpotifyClient,
     SpotifyPlaylist,
     SpotifyTrack,
 )
+from song_automations.errors import RateLimitedError, ReauthRequiredError
 
 
 class TestSpotifyTrack:
@@ -257,3 +263,56 @@ class TestParseTrack:
         assert track.artist == "Artist A"
         assert track.artists == ["Artist A", "Artist B", "Artist C"]
         assert len(track.artists) == 3
+
+
+class TestSpotifyRateLimitsAndNewApi:
+    """Long limits fail clearly and the 2026 playlist shape is understood."""
+
+    @staticmethod
+    def _client(monkeypatch):
+        """Builds a client with a mocked spotipy.
+
+        Args:
+            monkeypatch: Pytest monkeypatch.
+
+        Returns:
+            The client.
+        """
+        monkeypatch.setattr("song_automations.clients.spotify.time.sleep", lambda _: None)
+        client = SpotifyClient.__new__(SpotifyClient)
+        client._client = MagicMock()
+        client._last_search = 0.0
+        return client
+
+    @pytest.mark.parametrize("wait", [61, 79320])
+    def test_long_limit_raises_at_once(self, monkeypatch, wait):
+        """A wait of hours becomes an error, never a silent hang."""
+        client = self._client(monkeypatch)
+        client._client.search.side_effect = SpotifyException(429, -1, "limited", headers={"Retry-After": str(wait)})
+        with pytest.raises(RateLimitedError):
+            client.search_raw("q")
+        assert client._client.search.call_count == 1
+
+    def test_short_limit_is_waited_out(self, monkeypatch):
+        """A short limit retries on its own."""
+        client = self._client(monkeypatch)
+        client._client.search.side_effect = [
+            SpotifyException(429, -1, "limited", headers={"Retry-After": "2"}),
+            {"tracks": {"items": [{"id": "1"}]}},
+        ]
+        assert client.search_raw("q") == [{"id": "1"}]
+
+    @pytest.mark.parametrize("field", ["item", "track"])
+    def test_playlist_reads_new_and_old_field_names(self, monkeypatch, field):
+        """Both the current and the previous response shape are read."""
+        client = self._client(monkeypatch)
+        raw = {"id": "1", "uri": "u", "name": "n", "artists": [{"name": "a"}]}
+        client._client.playlist_items.return_value = {"items": [{field: raw}, {field: None}], "next": None}
+        assert [t.id for t in client.get_playlist_tracks("p")] == ["1"]
+
+    def test_expired_login_is_named(self, monkeypatch):
+        """An expired refresh token asks for the browser, plainly."""
+        client = self._client(monkeypatch)
+        client._client.search.side_effect = SpotifyOauthError("invalid_grant")
+        with pytest.raises(ReauthRequiredError):
+            client.search_raw("q")

@@ -850,3 +850,69 @@ class TestStateTrackerSyncLogs:
 
         final_count = tracker.get_sync_log_count()
         assert final_count == 5
+
+
+class TestGateMatcherMigration:
+    """Moving an existing database to the gate-based matcher."""
+
+    @staticmethod
+    def _old_database(path):
+        """Creates a database in the old shape.
+
+        Args:
+            path: Database path.
+        """
+        tracker = StateTracker(path)
+        with tracker._get_connection() as conn:
+            conn.execute("PRAGMA user_version = 0")
+            conn.execute("ALTER TABLE matched_tracks DROP COLUMN match_tier")
+            for position, status, target in (("A1", "pending", "p"), ("A2", "approved", "a"), ("A3", "rejected", "r")):
+                conn.execute(
+                    """
+                    INSERT INTO matched_tracks
+                    (discogs_release_id, discogs_track_position, artist, track_name, destination,
+                     destination_track_id, match_confidence, review_status)
+                    VALUES (1, ?, 'x', 'y', 'spotify', ?, 0.5, ?)
+                    """,
+                    (position, target, status),
+                )
+
+    def test_unreviewed_rows_go_and_reviewed_rows_stay(self, tmp_path):
+        """Only unreviewed rows are searched again."""
+        path = tmp_path / "state.db"
+        self._old_database(path)
+        tracker = StateTracker(path)
+        assert tracker.get_cached_match(1, "A1", "spotify") is None
+        assert tracker.get_cached_match(1, "A2", "spotify").destination_track_id == "a"
+
+    def test_refusals_are_remembered(self, tmp_path):
+        """A refused id stays refused after the migration."""
+        path = tmp_path / "state.db"
+        self._old_database(path)
+        assert StateTracker(path).get_rejected_ids(1, "A3", "spotify") == frozenset({"r"})
+
+    def test_backup_is_kept_and_second_start_changes_nothing(self, tmp_path):
+        """The old database survives as a copy and the move happens once."""
+        path = tmp_path / "state.db"
+        self._old_database(path)
+        tracker = StateTracker(path)
+        tracker.save_matched_track(2, "B1", "x", "y", "spotify", "new", 0.9)
+        assert path.with_suffix(".before-gate-matcher.db").exists()
+        assert StateTracker(path).get_cached_match(2, "B1", "spotify").destination_track_id == "new"
+
+    @pytest.mark.parametrize("status", ["rejected"])
+    def test_review_refusal_is_recorded(self, tmp_path, status):
+        """Refusing in the review tool is remembered after the row is replaced."""
+        tracker = StateTracker(tmp_path / "state.db")
+        tracker.save_matched_track(1, "A1", "x", "y", "spotify", "bad", 0.9)
+        row_id = tracker.get_cached_match(1, "A1", "spotify").id
+        tracker.update_review_status(row_id, status)
+        tracker.save_matched_track(1, "A1", "x", "y", "spotify", "good", 0.9)
+        assert tracker.get_rejected_ids(1, "A1", "spotify") == frozenset({"bad"})
+
+    def test_search_cache_round_trip(self, tmp_path):
+        """Raw responses come back unchanged."""
+        tracker = StateTracker(tmp_path / "state.db")
+        tracker.save_search_cache("spotify", "q", [{"id": 1}])
+        assert tracker.get_search_cache("spotify", "q") == [{"id": 1}]
+        assert tracker.get_search_cache("spotify", "other") is None

@@ -20,6 +20,11 @@ class Track:
         duration: Track duration string if available.
         release_id: Parent release ID.
         release_title: Parent release title.
+        artist_names: Every credited name, including name variations on the release.
+        artist_ids: Discogs ids of the credited artists.
+        remixers: Remixers credited on the track.
+        labels: Label names of the release.
+        release_artist: Main artist of the release, empty for compilations.
     """
 
     position: str
@@ -28,6 +33,11 @@ class Track:
     duration: str
     release_id: int
     release_title: str
+    artist_names: tuple[str, ...] = ()
+    artist_ids: tuple[int, ...] = ()
+    remixers: tuple[str, ...] = ()
+    labels: tuple[str, ...] = ()
+    release_artist: str = ""
 
     @property
     def full_title(self) -> str:
@@ -87,6 +97,7 @@ class DiscogsClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._artist_names: dict[int, tuple[str, ...]] = {}
         self._client = discogs_client.Client(
             "SongAutomations/0.1.0",
             user_token=settings.discogs_user_token,
@@ -211,6 +222,15 @@ class DiscogsClient:
             tracks = []
 
             release_artist = self._extract_artists(release.artists)
+            data = release.data if isinstance(getattr(release, "data", None), dict) else {}
+            release_credits = data.get("artists") or []
+            labels = tuple(
+                name
+                for name in dict.fromkeys(
+                    self._clean_artist_name(label.get("name", "")) for label in data.get("labels") or []
+                )
+                if name and not name.lower().startswith("not on label")
+            )
 
             for track in release.tracklist:
                 if not track.position or track.position.lower() in ("video", "dvd"):
@@ -221,6 +241,15 @@ class DiscogsClient:
                 else:
                     track_artist = release_artist
 
+                raw = track.data if isinstance(getattr(track, "data", None), dict) else {}
+                credits = raw.get("artists") or release_credits
+                names = [self._clean_artist_name(c.get("name", "")) for c in credits]
+                names += [c["anv"] for c in credits if c.get("anv")]
+                remixers = [
+                    self._clean_artist_name(extra.get("name", ""))
+                    for extra in raw.get("extraartists") or []
+                    if "remix" in (extra.get("role") or "").lower()
+                ]
                 tracks.append(
                     Track(
                         position=track.position,
@@ -229,6 +258,11 @@ class DiscogsClient:
                         duration=track.duration or "",
                         release_id=release_id,
                         release_title=release.title,
+                        artist_names=tuple(n for n in dict.fromkeys(names) if n.lower() != "various"),
+                        artist_ids=tuple(c["id"] for c in credits if c.get("id")),
+                        remixers=tuple(remixers),
+                        labels=labels,
+                        release_artist="" if release_artist.lower() == "various" else release_artist,
                     )
                 )
 
@@ -237,6 +271,29 @@ class DiscogsClient:
             if e.status_code == 404:
                 return []
             raise
+
+    def get_artist_names(self, artist_id: int) -> tuple[str, ...]:
+        """Lists the other names of an artist, used only when a track found no match.
+
+        Args:
+            artist_id: Discogs artist id.
+
+        Returns:
+            Name variations and aliases.
+        """
+        if artist_id not in self._artist_names:
+            try:
+                artist = self._client.artist(artist_id)
+                artist.refresh()
+                data = artist.data
+                names = list(data.get("namevariations") or [])
+                names += [self._clean_artist_name(a.get("name", "")) for a in data.get("aliases") or []]
+                self._artist_names[artist_id] = tuple(dict.fromkeys(names))
+            except HTTPError as error:
+                if error.status_code != 404:
+                    raise
+                self._artist_names[artist_id] = ()
+        return self._artist_names[artist_id]
 
     def _extract_artists(self, artists: list) -> str:
         """Extract a clean artist name from Discogs artist list.

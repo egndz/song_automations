@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 Destination = Literal["spotify", "soundcloud"]
+MATCHER_SCHEMA_VERSION = 2
 EventType = Literal[
     "sync_start",
     "sync_complete",
@@ -64,6 +65,7 @@ class MatchedTrack:
         searched_at: When the search was performed.
         review_status: Review status (pending, approved, rejected).
         id: Database row ID.
+        match_tier: exact, original or other_mix.
     """
 
     discogs_release_id: int
@@ -76,6 +78,7 @@ class MatchedTrack:
     searched_at: datetime
     review_status: str = "pending"
     id: int | None = None
+    match_tier: str | None = None
 
 
 @dataclass
@@ -275,9 +278,143 @@ class StateTracker:
                     ON sync_logs(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_sync_logs_destination
                     ON sync_logs(destination);
+                CREATE TABLE IF NOT EXISTS search_cache (
+                    platform TEXT NOT NULL,
+                    query_key TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (platform, query_key)
+                );
+                CREATE TABLE IF NOT EXISTS rejected_matches (
+                    discogs_release_id INTEGER NOT NULL,
+                    discogs_track_position TEXT NOT NULL,
+                    destination TEXT NOT NULL,
+                    destination_track_id TEXT NOT NULL,
+                    PRIMARY KEY (discogs_release_id, discogs_track_position,
+                                 destination, destination_track_id)
+                );
             """
             )
             self._migrate_review_status(conn)
+            self._migrate_gate_matcher(conn)
+
+    def _migrate_gate_matcher(self, conn: sqlite3.Connection) -> None:
+        """Moves the database to the gate-based matcher, once.
+
+        Matches made by the old scorer cannot be trusted, so unreviewed rows are
+        dropped and searched again. Reviewed rows stay, refusals are remembered
+        for good, and a copy of the old database is kept next to it.
+
+        Args:
+            conn: Database connection.
+        """
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= MATCHER_SCHEMA_VERSION:
+            return
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(matched_tracks)")}
+        rows = conn.execute("SELECT COUNT(*) FROM matched_tracks").fetchone()[0]
+        if rows:
+            backup = self._db_path.with_suffix(".before-gate-matcher.db")
+            if not backup.exists():
+                target = sqlite3.connect(backup)
+                conn.backup(target)
+                target.close()
+        for column, kind in (
+            ("match_tier", "TEXT"),
+            ("matched_title", "TEXT"),
+            ("matched_uploader", "TEXT"),
+            ("match_reading", "TEXT"),
+        ):
+            if column not in columns:
+                conn.execute(f"ALTER TABLE matched_tracks ADD COLUMN {column} {kind}")
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO rejected_matches
+            SELECT discogs_release_id, discogs_track_position, destination, destination_track_id
+            FROM matched_tracks
+            WHERE review_status = 'rejected' AND destination_track_id IS NOT NULL
+            """
+        )
+        conn.execute(
+            "DELETE FROM matched_tracks WHERE review_status IS NULL OR review_status = 'pending'"
+        )
+        conn.execute(f"PRAGMA user_version = {MATCHER_SCHEMA_VERSION}")
+
+    def get_search_cache(self, platform: str, key: str, max_age_days: int = 30) -> list | dict | None:
+        """Reads a stored search response.
+
+        Args:
+            platform: Platform name.
+            key: Query key.
+            max_age_days: Older entries count as absent.
+
+        Returns:
+            The stored response, or None.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT payload FROM search_cache
+                WHERE platform = ? AND query_key = ? AND fetched_at > datetime('now', ?)
+                """,
+                (platform, key, f"-{max_age_days} days"),
+            ).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def save_search_cache(self, platform: str, key: str, payload: list | dict) -> None:
+        """Stores a search response.
+
+        Args:
+            platform: Platform name.
+            key: Query key.
+            payload: Raw response.
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO search_cache (platform, query_key, payload) VALUES (?, ?, ?)",
+                (platform, key, json.dumps(payload)),
+            )
+
+    def get_rejected_ids(
+        self, discogs_release_id: int, track_position: str, destination: Destination
+    ) -> frozenset[str]:
+        """Lists the candidates a person refused for a track.
+
+        Args:
+            discogs_release_id: Discogs release ID.
+            track_position: Track position.
+            destination: Target platform.
+
+        Returns:
+            Refused track ids.
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT destination_track_id FROM rejected_matches
+                WHERE discogs_release_id = ? AND discogs_track_position = ? AND destination = ?
+                """,
+                (discogs_release_id, track_position, destination),
+            ).fetchall()
+        return frozenset(row[0] for row in rows)
+
+    def get_matches_for_report(self, destination: Destination | None = None) -> list[dict]:
+        """Reads every decision with its evidence.
+
+        Args:
+            destination: Optional platform filter.
+
+        Returns:
+            One dictionary per track, weakest evidence first.
+        """
+        query = "SELECT * FROM matched_tracks"
+        params: tuple = ()
+        if destination:
+            query += " WHERE destination = ?"
+            params = (destination,)
+        query += " ORDER BY destination, match_confidence, artist, track_name"
+        with self._get_connection() as conn:
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
 
     def _migrate_review_status(self, conn: sqlite3.Connection) -> None:
         """Add review_status column if it doesn't exist (migration)."""
@@ -494,6 +631,7 @@ class StateTracker:
                 match_confidence=row["match_confidence"],
                 searched_at=datetime.fromisoformat(row["searched_at"]),
                 review_status=row["review_status"] or "pending",
+                match_tier=row["match_tier"],
             )
 
     def save_matched_track(
@@ -505,6 +643,10 @@ class StateTracker:
         destination: Destination,
         destination_track_id: str | None,
         match_confidence: float,
+        match_tier: str | None = None,
+        matched_title: str | None = None,
+        matched_uploader: str | None = None,
+        match_reading: str | None = None,
     ) -> None:
         """Save a track match to the cache.
 
@@ -516,14 +658,19 @@ class StateTracker:
             destination: Target platform.
             destination_track_id: Platform-specific track ID (None if not found).
             match_confidence: Match confidence score.
+            match_tier: exact, original or other_mix.
+            matched_title: Title on the platform.
+            matched_uploader: Uploading account on SoundCloud.
+            match_reading: Which reading of the title passed.
         """
         with self._get_connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO matched_tracks
                 (discogs_release_id, discogs_track_position, artist, track_name,
-                 destination, destination_track_id, match_confidence)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                 destination, destination_track_id, match_confidence,
+                 match_tier, matched_title, matched_uploader, match_reading)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     discogs_release_id,
@@ -533,6 +680,10 @@ class StateTracker:
                     destination,
                     destination_track_id,
                     match_confidence,
+                    match_tier,
+                    matched_title,
+                    matched_uploader,
+                    match_reading,
                 ),
             )
 
@@ -781,6 +932,17 @@ class StateTracker:
                 "UPDATE matched_tracks SET review_status = ? WHERE id = ?",
                 (status, track_id),
             )
+            if status == "rejected":
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO rejected_matches
+                    SELECT discogs_release_id, discogs_track_position, destination,
+                           destination_track_id
+                    FROM matched_tracks
+                    WHERE id = ? AND destination_track_id IS NOT NULL
+                    """,
+                    (track_id,),
+                )
 
     def delete_matched_track(self, track_id: int) -> None:
         """Delete a matched track by its database ID.

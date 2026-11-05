@@ -5,11 +5,16 @@ from dataclasses import dataclass, field
 
 import spotipy
 from spotipy.exceptions import SpotifyException
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 
 from song_automations.config import Settings
+from song_automations.errors import RateLimitedError, ReauthRequiredError
 
-PLAYLIST_CACHE_TTL = 300  # 5 minutes
+PLAYLIST_CACHE_TTL = 300
+MAX_WAIT_SECONDS = 60
+MAX_ATTEMPTS = 5
+SEARCH_PAUSE_SECONDS = 0.5
+SEARCH_LIMIT = 10
 
 
 @dataclass
@@ -123,7 +128,13 @@ class SpotifyClient:
             cache_path=str(cache_path),
             open_browser=True,
         )
-        self._client = spotipy.Spotify(auth_manager=auth_manager)
+        self._client = spotipy.Spotify(
+            auth_manager=auth_manager,
+            retries=0,
+            status_retries=0,
+            requests_timeout=20,
+        )
+        self._last_search = 0.0
         self._user_id: str | None = None
         self._playlist_cache = CachedPlaylists()
 
@@ -131,8 +142,77 @@ class SpotifyClient:
     def user_id(self) -> str:
         """Get the authenticated user's ID."""
         if self._user_id is None:
-            self._user_id = self._client.current_user()["id"]
+            self._user_id = self._call(self._client.current_user)["id"]
         return self._user_id
+
+    def _call(self, method, *args, **kwargs):
+        """Calls Spotify, waiting out short limits and refusing to wait out long ones.
+
+        spotipy would otherwise honor any Retry-After silently, and Spotify can
+        ask for a wait of many hours, which looks like a hang.
+
+        Args:
+            method: Bound spotipy method.
+            *args: Positional arguments.
+            **kwargs: Keyword arguments.
+
+        Returns:
+            The response.
+
+        Raises:
+            RateLimitedError: When Spotify asks for a long wait.
+            ReauthRequiredError: When the login can no longer be refreshed.
+        """
+        for attempt in range(MAX_ATTEMPTS):
+            try:
+                return method(*args, **kwargs)
+            except SpotifyOauthError as error:
+                raise ReauthRequiredError("Spotify") from error
+            except SpotifyException as error:
+                last_attempt = attempt == MAX_ATTEMPTS - 1
+                if error.http_status == 429:
+                    wait = int((error.headers or {}).get("Retry-After", 5))
+                    if wait > MAX_WAIT_SECONDS or last_attempt:
+                        raise RateLimitedError("Spotify", wait) from error
+                    time.sleep(wait + 1)
+                elif error.http_status >= 500 and not last_attempt:
+                    time.sleep(2**attempt)
+                else:
+                    raise
+        raise RuntimeError("unreachable")
+
+    def search_raw(self, query: str, kind: str = "track", limit: int = SEARCH_LIMIT) -> list[dict]:
+        """Searches Spotify and returns the raw items.
+
+        Args:
+            query: Search query.
+            kind: track or album.
+            limit: Maximum results, 10 is the most Spotify allows in development mode.
+
+        Returns:
+            Raw result items.
+        """
+        pause = SEARCH_PAUSE_SECONDS - (time.monotonic() - self._last_search)
+        if pause > 0:
+            time.sleep(pause)
+        self._last_search = time.monotonic()
+        results = self._call(self._client.search, q=query, type=kind, limit=limit)
+        return results[f"{kind}s"]["items"]
+
+    def album_raw(self, album_id: str) -> dict:
+        """Fetches an album with its tracks.
+
+        Args:
+            album_id: Spotify album id.
+
+        Returns:
+            Raw album object.
+        """
+        pause = SEARCH_PAUSE_SECONDS - (time.monotonic() - self._last_search)
+        if pause > 0:
+            time.sleep(pause)
+        self._last_search = time.monotonic()
+        return self._call(self._client.album, album_id)
 
     def search_tracks(
         self,
@@ -148,34 +228,8 @@ class SpotifyClient:
         Returns:
             List of SearchResult objects.
         """
-        results = self._client.search(q=query, type="track", limit=limit)
-        items = results["tracks"]["items"]
-
-        artist_ids = list({
-            item["artists"][0]["id"]
-            for item in items
-            if item["artists"]
-        })
-
-        verified_artists: set[str] = set()
-        if artist_ids:
-            try:
-                artists_data = self._client.artists(artist_ids)
-                for artist in artists_data.get("artists", []):
-                    if artist and artist.get("followers", {}).get("total", 0) > 10000:
-                        verified_artists.add(artist["id"])
-            except SpotifyException:
-                pass
-
-        search_results = []
-        for item in items:
-            track = self._parse_track(item)
-            is_verified = False
-            if item["artists"]:
-                is_verified = item["artists"][0]["id"] in verified_artists
-            search_results.append(SearchResult(track=track, is_verified=is_verified))
-
-        return search_results
+        items = self.search_raw(query, limit=limit)
+        return [SearchResult(track=self._parse_track(item), is_verified=False) for item in items]
 
     def invalidate_playlist_cache(self) -> None:
         """Invalidate the playlist cache."""
@@ -204,7 +258,7 @@ class SpotifyClient:
         limit = 50
 
         while True:
-            results = self._client.current_user_playlists(limit=limit, offset=offset)
+            results = self._call(self._client.current_user_playlists, limit=limit, offset=offset)
             if not results["items"]:
                 break
 
@@ -218,7 +272,7 @@ class SpotifyClient:
                         uri=item["uri"],
                         name=item["name"],
                         owner_id=item["owner"]["id"],
-                        track_count=item["tracks"]["total"],
+                        track_count=(item.get("items") or item.get("tracks") or {}).get("total", 0),
                         public=item["public"],
                     )
                 )
@@ -260,8 +314,8 @@ class SpotifyClient:
         Returns:
             The created SpotifyPlaylist.
         """
-        result = self._client.user_playlist_create(
-            user=self.user_id,
+        result = self._call(
+            self._client.current_user_playlist_create,
             name=name,
             public=public,
             description=description,
@@ -282,7 +336,7 @@ class SpotifyClient:
         Args:
             playlist_id: Spotify playlist ID.
         """
-        self._client.current_user_unfollow_playlist(playlist_id)
+        self._call(self._client.current_user_unfollow_playlist, playlist_id)
         self.invalidate_playlist_cache()
 
     def get_playlist_tracks(self, playlist_id: str) -> list[SpotifyTrack]:
@@ -299,18 +353,13 @@ class SpotifyClient:
         limit = 100
 
         while True:
-            results = self._client.playlist_tracks(
-                playlist_id,
-                limit=limit,
-                offset=offset,
-                fields="items(track(id,uri,name,artists,album,popularity,duration_ms,is_playable)),next",
-            )
+            results = self._call(self._client.playlist_items, playlist_id, limit=limit, offset=offset)
 
-            for item in results["items"]:
-                if item["track"] is None:
+            for entry in results["items"]:
+                item = entry.get("item") or entry.get("track")
+                if item is None or item.get("type", "track") != "track" or item.get("id") is None:
                     continue
-                track = self._parse_track(item["track"])
-                tracks.append(track)
+                tracks.append(self._parse_track(item))
 
             if not results["next"]:
                 break
@@ -331,7 +380,7 @@ class SpotifyClient:
         """
         for i in range(0, len(track_uris), 100):
             batch = track_uris[i : i + 100]
-            self._client.playlist_add_items(playlist_id, batch)
+            self._call(self._client.playlist_add_items, playlist_id, batch)
 
     def remove_tracks_from_playlist(
         self,
@@ -346,7 +395,7 @@ class SpotifyClient:
         """
         for i in range(0, len(track_uris), 100):
             batch = track_uris[i : i + 100]
-            self._client.playlist_remove_all_occurrences_of_items(playlist_id, batch)
+            self._call(self._client.playlist_remove_all_occurrences_of_items, playlist_id, batch)
 
     def _parse_track(self, item: dict) -> SpotifyTrack:
         """Parse a Spotify API track response into a SpotifyTrack.
