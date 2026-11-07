@@ -22,6 +22,7 @@ class Settings(BaseSettings):
         soundcloud_redirect_uri: OAuth redirect URI for SoundCloud authentication.
         data_dir: Directory for storing SQLite database and cache files.
         playlist_prefix: Prefix for created playlists.
+        spotify_search_budget: Spotify searches one run may make.
         min_confidence: Minimum confidence threshold for track matching.
         high_confidence: Threshold for high confidence matches (auto-add).
         log_level: Logging level for file output.
@@ -75,6 +76,11 @@ class Settings(BaseSettings):
         description="Prefix for created playlists",
     )
 
+    spotify_search_budget: int = Field(
+        default=400,
+        ge=1,
+        description="Spotify searches one run may make; development mode apps are blocked for a day after about 900",
+    )
     min_confidence: float = Field(
         default=0.30,
         ge=0.0,

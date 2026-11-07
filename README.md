@@ -107,7 +107,13 @@ Matching works release by release and only accepts a candidate that passes every
 - **Length**: an exact-version match must be within 20 seconds of the Discogs duration when both are known.
 - **No duplicates**: each streaming track is used once per playlist, and two Discogs tracks never share one match.
 
-On Spotify the tool looks for the release as an album first, then searches track by track. On SoundCloud it also looks at sets and at the label's or artist's own account, and accepts fan or vinyl-rip uploads when artist, title and length agree.
+On Spotify the tool looks for the release as an album first, then runs one search per remaining track. On SoundCloud it also looks at sets and at the label's or artist's own account.
+
+SoundCloud uploads by the artist, the label or the remixer named in the title are trusted. Anyone else's upload (fan uploads, vinyl rips) is only accepted when its length is within 20 seconds of the Discogs length. When Discogs has no length, the length of the exact Spotify match is used, so run Spotify first (`sync all` does). Tested against Spotify, fan uploads without a known length had the wrong length more often than the right one, so they are refused.
+
+### Spotify limits
+
+Spotify apps in development mode are blocked for about a day after roughly 900 requests. One run makes at most 400 searches (`SPOTIFY_SEARCH_BUDGET`). When the budget is used up the run stops cleanly, finished folders are synced and every search is saved, so the next run carries on from there. If Spotify blocks the app anyway, the sync says until when and leaves unfinished folders alone.
 
 Tracks that are not found are retried after a week. Run `song-automations report matches` to get a CSV of every match with its tier, so you can check substitutions and missing tracks.
 

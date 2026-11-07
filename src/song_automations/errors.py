@@ -17,7 +17,8 @@ class RateLimitedError(RuntimeError):
         until = datetime.now() + timedelta(seconds=retry_after_seconds)
         super().__init__(
             f"{platform} has rate limited this app until {until:%Y-%m-%d %H:%M}. "
-            "Nothing was changed. Run the sync again after that time."
+            "Folders finished before that were synced, the rest were left unchanged. "
+            "Run the sync again after that time."
         )
 
 
@@ -31,6 +32,23 @@ class ReauthRequiredError(RuntimeError):
     def __init__(self, platform: str) -> None:
         self.platform = platform
         super().__init__(
-            f"Your {platform} login has expired. Nothing was changed. "
+            f"Your {platform} login has expired. Unfinished folders were left unchanged. "
             f"Run the sync again in a terminal and approve the {platform} page that opens."
+        )
+
+
+class SearchBudgetExhaustedError(RuntimeError):
+    """A run used all the searches it may make, to stay under the platform quota.
+
+    Args:
+        platform: Platform name.
+        budget: Searches allowed per run.
+    """
+
+    def __init__(self, platform: str, budget: int) -> None:
+        self.platform = platform
+        self.budget = budget
+        super().__init__(
+            f"This run used its {budget} {platform} searches. Finished folders were synced and "
+            "every search so far is saved, so the next run continues where this one stopped."
         )

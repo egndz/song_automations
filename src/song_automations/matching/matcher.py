@@ -59,7 +59,7 @@ NEUTRAL_VERSION = re.compile(
 REJECT_MARKERS = re.compile(
     r"\b(cover|covered by|karaoke|tribute|in the style of|originally performed|made famous|"
     r"nightcore|sped up|speed up|slowed|8d audio|type beat|reaction|tutorial|"
-    r"preview|snippet|teaser|sample pack|mashup|mash up|bootleg|"
+    r"preview|snippet|teaser|clip|sample pack|mashup|mash up|bootleg|"
     r"acapella|a cappella|instrumental|piano version|acoustic)\b"
 )
 SOFT_MARKERS = re.compile(
@@ -67,6 +67,7 @@ SOFT_MARKERS = re.compile(
     r"full album|full ep|album mix|continuous mix|dj mix|live)\b"
 )
 SOFT_MARKER_TOLERANCE_MS = 5_000
+COVER_ACCOUNT = re.compile(r"tribute|cover|karaoke|choir|orchestra|ensemble")
 PART_PATTERN = re.compile(r"\b(?:part|pt)\.?\s*(\d+|[ivx]{1,4})\b", re.IGNORECASE)
 BRACKET_PATTERN = re.compile(r"[(\[{]([^)\]}]*)[)\]}]")
 FEATURING_PATTERN = re.compile(r"\s+(?:feat\.?|ft\.?|featuring|with)\s+.*$", re.IGNORECASE)
@@ -476,6 +477,38 @@ def _confidence(tier: Tier, reading: Reading, delta: int | None, same_release: b
     return round(min(base, 1.0), 2)
 
 
+def _fan_upload_unverified(source: SourceTrack, candidate: Candidate, versions: Sequence[str]) -> bool:
+    """Checks whether an upload by a stranger lacks the evidence that would confirm it.
+
+    Uploads by the artist, the label or the remixer named in the title are
+    trusted. Anyone else's upload must match the Discogs length, so without a
+    known length it is refused, and a cover or tribute account is always refused.
+    Checked against Spotify, fan uploads without a known length had the wrong
+    length more often than the right one.
+
+    Args:
+        source: Source track.
+        candidate: Candidate track.
+        versions: Version annotations of the reading that passed.
+
+    Returns:
+        True when the candidate is an unconfirmed fan upload.
+    """
+    if not candidate.uploader:
+        return False
+    uploader = (candidate.uploader,)
+    if artists_agree((*source.artists, *source.remixers), uploader) or artists_agree(source.labels, uploader):
+        return False
+    name = clean(candidate.uploader)
+    if name and any(name in clean(version) for version in versions):
+        return False
+    if COVER_ACCOUNT.search(name.replace(" ", "")):
+        return True
+    if source.duration_ms and candidate.duration_ms:
+        return abs(source.duration_ms - candidate.duration_ms) > DURATION_TOLERANCE_MS
+    return True
+
+
 def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
     """Applies the gates to one candidate.
 
@@ -516,6 +549,8 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         tier = Tier.OTHER_MIX
     elif duration_reason:
         return Rejection(candidate, duration_reason)
+    if _fan_upload_unverified(source, candidate, parse_title(reading.title)[1]):
+        return Rejection(candidate, "fan_unverified")
     delta = (
         abs(source.duration_ms - candidate.duration_ms)
         if source.duration_ms and candidate.duration_ms

@@ -308,10 +308,12 @@ class StateTracker:
         Args:
             conn: Database connection.
         """
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(matched_tracks)")}
+        if "matched_duration_ms" not in columns:
+            conn.execute("ALTER TABLE matched_tracks ADD COLUMN matched_duration_ms INTEGER")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version >= MATCHER_SCHEMA_VERSION:
             return
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(matched_tracks)")}
         rows = conn.execute("SELECT COUNT(*) FROM matched_tracks").fetchone()[0]
         if rows:
             backup = self._db_path.with_suffix(".before-gate-matcher.db")
@@ -647,6 +649,7 @@ class StateTracker:
         matched_title: str | None = None,
         matched_uploader: str | None = None,
         match_reading: str | None = None,
+        matched_duration_ms: int | None = None,
     ) -> None:
         """Save a track match to the cache.
 
@@ -662,6 +665,7 @@ class StateTracker:
             matched_title: Title on the platform.
             matched_uploader: Uploading account on SoundCloud.
             match_reading: Which reading of the title passed.
+            matched_duration_ms: Length of the matched platform track.
         """
         with self._get_connection() as conn:
             conn.execute(
@@ -669,8 +673,9 @@ class StateTracker:
                 INSERT OR REPLACE INTO matched_tracks
                 (discogs_release_id, discogs_track_position, artist, track_name,
                  destination, destination_track_id, match_confidence,
-                 match_tier, matched_title, matched_uploader, match_reading)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 match_tier, matched_title, matched_uploader, match_reading,
+                 matched_duration_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     discogs_release_id,
@@ -684,8 +689,34 @@ class StateTracker:
                     matched_title,
                     matched_uploader,
                     match_reading,
+                    matched_duration_ms,
                 ),
             )
+
+    def get_reference_duration(self, discogs_release_id: int, track_position: str) -> int | None:
+        """Returns the length of an exact Spotify match, used when Discogs has no length.
+
+        Spotify exact matches agreed with every known Discogs length in testing,
+        so their length is a safe stand in for checking SoundCloud uploads.
+
+        Args:
+            discogs_release_id: Discogs release ID.
+            track_position: Track position.
+
+        Returns:
+            Length in milliseconds, or None.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT matched_duration_ms FROM matched_tracks
+                WHERE discogs_release_id = ? AND discogs_track_position = ?
+                  AND destination = 'spotify' AND match_tier = 'exact'
+                  AND matched_duration_ms IS NOT NULL
+                """,
+                (discogs_release_id, track_position),
+            ).fetchone()
+        return row[0] if row else None
 
     def save_missing_track(
         self,

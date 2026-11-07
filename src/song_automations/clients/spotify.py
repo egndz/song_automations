@@ -8,7 +8,11 @@ from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
 
 from song_automations.config import Settings
-from song_automations.errors import RateLimitedError, ReauthRequiredError
+from song_automations.errors import (
+    RateLimitedError,
+    ReauthRequiredError,
+    SearchBudgetExhaustedError,
+)
 
 PLAYLIST_CACHE_TTL = 300
 MAX_WAIT_SECONDS = 60
@@ -135,6 +139,8 @@ class SpotifyClient:
             requests_timeout=20,
         )
         self._last_search = 0.0
+        self._search_budget = settings.spotify_search_budget
+        self._searches = 0
         self._user_id: str | None = None
         self._playlist_cache = CachedPlaylists()
 
@@ -192,10 +198,7 @@ class SpotifyClient:
         Returns:
             Raw result items.
         """
-        pause = SEARCH_PAUSE_SECONDS - (time.monotonic() - self._last_search)
-        if pause > 0:
-            time.sleep(pause)
-        self._last_search = time.monotonic()
+        self._pace()
         results = self._call(self._client.search, q=query, type=kind, limit=limit)
         return results[f"{kind}s"]["items"]
 
@@ -208,11 +211,22 @@ class SpotifyClient:
         Returns:
             Raw album object.
         """
+        self._pace()
+        return self._call(self._client.album, album_id)
+
+    def _pace(self) -> None:
+        """Spaces out searches and stops the run when its search budget is used.
+
+        Raises:
+            SearchBudgetExhaustedError: When the run has made all the searches it may make.
+        """
+        if self._searches >= self._search_budget:
+            raise SearchBudgetExhaustedError("Spotify", self._search_budget)
+        self._searches += 1
         pause = SEARCH_PAUSE_SECONDS - (time.monotonic() - self._last_search)
         if pause > 0:
             time.sleep(pause)
         self._last_search = time.monotonic()
-        return self._call(self._client.album, album_id)
 
     def search_tracks(
         self,

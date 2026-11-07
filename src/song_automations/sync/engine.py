@@ -561,9 +561,11 @@ class SyncEngine:
             names += self._discogs.get_artist_names(artist_id)
         return tuple(dict.fromkeys(names))
 
-    @staticmethod
-    def _to_source(track: Track, release: Release) -> SourceTrack:
+    def _to_source(self, track: Track, release: Release) -> SourceTrack:
         """Prepares a Discogs track for matching.
+
+        When Discogs has no length, the length of an exact Spotify match stands
+        in, so SoundCloud uploads can still be checked against it.
 
         Args:
             track: Discogs track.
@@ -572,10 +574,13 @@ class SyncEngine:
         Returns:
             The source track.
         """
+        duration = _duration_ms(track.duration) or self._state.get_reference_duration(
+            release.id, track.position
+        )
         return SourceTrack(
             artists=track.artist_names or (track.artist,),
             title=track.title,
-            duration_ms=_duration_ms(track.duration),
+            duration_ms=duration,
             release_title=release.title,
             labels=track.labels,
             remixers=track.remixers,
@@ -608,6 +613,7 @@ class SyncEngine:
             matched_title=match.candidate.raw_title if match else None,
             matched_uploader=match.candidate.uploader if match else None,
             match_reading=match.reading.kind if match else None,
+            matched_duration_ms=match.candidate.duration_ms if match else None,
         )
 
     def _apply_playlist(

@@ -11,7 +11,11 @@ from song_automations.clients.spotify import (
     SpotifyPlaylist,
     SpotifyTrack,
 )
-from song_automations.errors import RateLimitedError, ReauthRequiredError
+from song_automations.errors import (
+    RateLimitedError,
+    ReauthRequiredError,
+    SearchBudgetExhaustedError,
+)
 
 
 class TestSpotifyTrack:
@@ -282,7 +286,22 @@ class TestSpotifyRateLimitsAndNewApi:
         client = SpotifyClient.__new__(SpotifyClient)
         client._client = MagicMock()
         client._last_search = 0.0
+        client._searches = 0
+        client._search_budget = 1000
         return client
+
+    @pytest.mark.parametrize("budget", [1, 3])
+    def test_search_budget_stops_the_run(self, monkeypatch, budget):
+        """Searches beyond the budget raise before any request is sent."""
+        client = self._client(monkeypatch)
+        client._search_budget = budget
+        client._client.search.return_value = {"tracks": {"items": []}}
+        for _ in range(budget):
+            client.search_raw("q")
+        with pytest.raises(SearchBudgetExhaustedError):
+            client.album_raw("a")
+        assert client._client.search.call_count == budget
+        assert client._client.album.call_count == 0
 
     @pytest.mark.parametrize("wait", [61, 79320])
     def test_long_limit_raises_at_once(self, monkeypatch, wait):

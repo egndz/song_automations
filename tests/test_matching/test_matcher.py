@@ -39,7 +39,7 @@ def spotify(title: str, artist: str, ms: int | None = None, id: str = "x", album
     )
 
 
-def soundcloud(title: str, uploader: str, ms: int | None = None, id: str = "x", artist: str = "") -> Candidate:
+def soundcloud(title: str, uploader: str, ms: int | None = 300_000, id: str = "x", artist: str = "") -> Candidate:
     """Builds a SoundCloud style candidate.
 
     Args:
@@ -99,7 +99,7 @@ def test_wrong_candidates_are_refused(artist, title, candidate):
 )
 def test_right_candidates_are_accepted_on_the_right_tier(artist, title, candidate, tier):
     """Real title shapes pass, placed at the correct rung of the version ladder."""
-    outcome = evaluate(SourceTrack((artist,), title), candidate)
+    outcome = evaluate(SourceTrack((artist,), title, duration_ms=candidate.duration_ms), candidate)
     assert isinstance(outcome, Match)
     assert outcome.tier == tier
 
@@ -183,9 +183,9 @@ def test_ranking_prefers_exact_then_original_then_other():
     decision = decide(
         source,
         [
-            soundcloud("Bicep - Glue (Four Tet Remix)", "a", id="other"),
-            soundcloud("Bicep - Glue", "b", id="original"),
-            soundcloud("Bicep - Glue (Dub)", "c", id="exact"),
+            soundcloud("Bicep - Glue (Four Tet Remix)", "Bicep", id="other"),
+            soundcloud("Bicep - Glue", "Bicep", id="original"),
+            soundcloud("Bicep - Glue (Dub)", "Bicep", id="exact"),
         ],
     )
     assert decision.match.candidate.id == "exact"
@@ -207,7 +207,7 @@ def test_ranking_prefers_the_source_release():
 
 def test_assign_release_gives_each_track_its_own_upload():
     """Two tracks falling back to one upload never share it."""
-    candidates = [soundcloud("Bicep - Glue", "a", id="plain"), soundcloud("Bicep - Glue (Dub)", "b", id="dub")]
+    candidates = [soundcloud("Bicep - Glue", "Bicep", id="plain"), soundcloud("Bicep - Glue (Dub)", "Bicep", id="dub")]
     decisions = [
         decide(SourceTrack(("Bicep",), "Glue (Remix)"), candidates),
         decide(SourceTrack(("Bicep",), "Glue (Dub)"), candidates),
@@ -219,9 +219,26 @@ def test_assign_release_gives_each_track_its_own_upload():
 
 def test_assign_release_leaves_a_track_empty_rather_than_repeat():
     """When only one upload exists, the second track gets nothing."""
-    candidate = [soundcloud("Bicep - Glue", "a", id="only")]
+    candidate = [soundcloud("Bicep - Glue", "Bicep", id="only")]
     decisions = [decide(SourceTrack(("Bicep",), "Glue"), candidate), decide(SourceTrack(("Bicep",), "Glue (Dub)"), candidate)]
     assert [m.candidate.id if m else None for m in assign_release(decisions)] == ["only", None]
+
+
+@pytest.mark.parametrize(
+    ("source", "candidate", "accepted"),
+    [
+        (SourceTrack(("Bicep",), "Glue"), soundcloud("Bicep - Glue", "Bicep"), True),
+        (SourceTrack(("Bicep",), "Glue", labels=("Ninja Tune",)), soundcloud("Bicep - Glue", "Ninja Tune"), True),
+        (SourceTrack(("Bicep",), "Glue", duration_ms=269_000), soundcloud("Bicep - Glue", "fan", ms=275_000), True),
+        (SourceTrack(("Bicep",), "Glue", duration_ms=269_000), soundcloud("Bicep - Glue", "fan", ms=442_000), False),
+        (SourceTrack(("Bicep",), "Glue"), soundcloud("Bicep - Glue", "fan", ms=269_000), False),
+        (SourceTrack(("Bicep",), "Glue"), soundcloud("Bicep - Glue (Pomo Edit)", "Pomo", ms=300_000), True),
+        (SourceTrack(("Sade",), "Smooth Operator", duration_ms=298_000), soundcloud("Sade - Smooth Operator", "Sade Tribute Band", ms=298_000), False),
+    ],
+)
+def test_fan_uploads_need_a_matching_length(source, candidate, accepted):
+    """Strangers' uploads count only when the length confirms them, the artist, label or remixer always count."""
+    assert isinstance(evaluate(source, candidate), Match) is accepted
 
 
 @pytest.mark.parametrize(
@@ -243,7 +260,7 @@ def test_soundcloud_readings_find_the_artist(title, kind):
 def test_decide_is_independent_of_candidate_order():
     """The same candidates in any order give the same choice."""
     source = SourceTrack(("Bicep",), "Glue")
-    items = [soundcloud("Bicep - Glue", str(i), id=str(i)) for i in range(4)]
+    items = [soundcloud("Bicep - Glue", "Bicep", id=str(i)) for i in range(4)]
     assert decide(source, items).match.candidate.id == decide(source, items[::-1]).match.candidate.id
 
 

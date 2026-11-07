@@ -143,19 +143,36 @@ def test_refused_candidate_is_never_chosen_again():
     assert got[0].candidate.id == "good"
 
 
-def test_aliases_rescue_a_track_filed_under_another_name():
-    """Discogs name variations are tried once the credited name finds nothing."""
+@pytest.mark.parametrize(("alias_searches", "expected"), [(2, "1"), (0, None)])
+def test_aliases_rescue_a_track_filed_under_another_name(alias_searches, expected):
+    """Discogs name variations are searched only when the searcher allows it."""
     query = "The Swingle Singers Vendome"
     client = FakeSpotify(tracks={query: [track("1", "Vendome", artist="The Swingle Singers")]})
+    searcher = SpotifySearcher(client, MemoryCache())
+    searcher.alias_searches = alias_searches
     got = resolve_release(
-        SpotifySearcher(client, MemoryCache()),
+        searcher,
         [SourceTrack(("Les Swingle Singers",), "Vendome")],
         ["Les Swingle Singers"],
         "Les Swingle Singers",
         "Jazz Sebastien Bach",
         alias_lookup=lambda index: ("The Swingle Singers",),
     )
-    assert got[0].candidate.id == "1"
+    assert (got[0].candidate.id if got[0] else None) == expected
+
+
+@pytest.mark.parametrize(
+    ("searcher_class", "alias_searches"), [(SpotifySearcher, 0), (SoundCloudSearcher, 2)]
+)
+def test_spotify_spends_no_searches_on_aliases(searcher_class, alias_searches):
+    """Spotify skips alias searches to stay under its daily quota."""
+    assert searcher_class.alias_searches == alias_searches
+
+
+def test_spotify_makes_one_query_per_track():
+    """Spotify only runs the fielded query, the one that finds almost every match."""
+    searcher = SpotifySearcher(FakeSpotify(), MemoryCache())
+    assert searcher.track_queries("Bicep", "Glue (Original Mix)") == ['track:"Glue" artist:"Bicep"']
 
 
 class FakeSoundCloud:

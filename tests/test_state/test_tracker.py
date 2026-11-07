@@ -916,3 +916,13 @@ class TestGateMatcherMigration:
         tracker.save_search_cache("spotify", "q", [{"id": 1}])
         assert tracker.get_search_cache("spotify", "q") == [{"id": 1}]
         assert tracker.get_search_cache("spotify", "other") is None
+
+    @pytest.mark.parametrize(
+        ("destination", "tier", "expected"),
+        [("spotify", "exact", 269_000), ("spotify", "other_mix", None), ("soundcloud", "exact", None)],
+    )
+    def test_reference_duration_comes_only_from_exact_spotify_matches(self, tmp_path, destination, tier, expected):
+        """Only an exact Spotify match lends its length to SoundCloud checks."""
+        tracker = StateTracker(tmp_path / "state.db")
+        tracker.save_matched_track(1, "A1", "x", "y", destination, "id", 0.9, match_tier=tier, matched_duration_ms=269_000)
+        assert tracker.get_reference_duration(1, "A1") == expected

@@ -13,7 +13,11 @@ from song_automations.clients.http import RateLimitError
 from song_automations.clients.soundcloud import SoundCloudClient
 from song_automations.clients.spotify import SpotifyClient
 from song_automations.config import Settings, get_settings
-from song_automations.errors import RateLimitedError, ReauthRequiredError
+from song_automations.errors import (
+    RateLimitedError,
+    ReauthRequiredError,
+    SearchBudgetExhaustedError,
+)
 from song_automations.logging import setup_logging
 from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
@@ -120,6 +124,9 @@ def _guarded_sync(*args, **kwargs) -> SyncResult:
     """
     try:
         return _run_sync(*args, **kwargs)
+    except SearchBudgetExhaustedError as error:
+        console.print(f"[yellow]{error}[/yellow]")
+        raise typer.Exit(0) from error
     except (RateLimitedError, ReauthRequiredError) as error:
         console.print(f"[red]{error}[/red]")
         raise typer.Exit(2) from error
@@ -338,25 +345,22 @@ def sync_all(
     """Sync Discogs folders to both Spotify and SoundCloud."""
     console.print("[bold]Syncing to all platforms...[/bold]\n")
 
-    console.print("[bold cyan]--- Spotify ---[/bold cyan]")
-    sync_spotify(
-        folders=folders,
-        exclude_wantlist=exclude_wantlist,
-        dry_run=dry_run,
-        min_confidence=None,
-        force_rematch=force_rematch,
-        force_rematch_all=force_rematch_all,
-    )
-
-    console.print("\n[bold cyan]--- SoundCloud ---[/bold cyan]")
-    sync_soundcloud(
-        folders=folders,
-        exclude_wantlist=exclude_wantlist,
-        dry_run=dry_run,
-        min_confidence=None,
-        force_rematch=force_rematch,
-        force_rematch_all=force_rematch_all,
-    )
+    exit_code = 0
+    for name, command in (("Spotify", sync_spotify), ("SoundCloud", sync_soundcloud)):
+        console.print(f"\n[bold cyan]--- {name} ---[/bold cyan]")
+        try:
+            command(
+                folders=folders,
+                exclude_wantlist=exclude_wantlist,
+                dry_run=dry_run,
+                min_confidence=None,
+                force_rematch=force_rematch,
+                force_rematch_all=force_rematch_all,
+            )
+        except typer.Exit as stop:
+            exit_code = max(exit_code, stop.exit_code)
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 @app.command("status")

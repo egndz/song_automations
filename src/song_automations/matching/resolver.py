@@ -20,7 +20,7 @@ from song_automations.matching.matcher import (
 )
 
 MAX_ALIAS_SEARCHES = 2
-MAX_ALBUMS = 3
+MAX_ALBUMS = 2
 MIN_BARE_TITLE_QUERY = 8
 PLAYLIST_LIMIT = 20
 ALBUM_TITLE_RATIO_WORDS = 1
@@ -69,6 +69,7 @@ class SpotifySearcher:
     """
 
     platform = "spotify"
+    alias_searches = 0
 
     def __init__(self, client, cache: SearchCache) -> None:
         self._client = client
@@ -136,11 +137,7 @@ class SpotifySearcher:
         Returns:
             Queries to try in order.
         """
-        base, raw = search_title(title), raw_title(title)
-        queries = [f'track:"{base}" artist:"{artist}"', f"{artist} {base}"]
-        if raw != base:
-            queries.append(f"{artist} {raw}")
-        return queries
+        return [f'track:"{search_title(title)}" artist:"{artist}"']
 
     def search(self, query: str) -> list[Candidate]:
         """Runs one track search.
@@ -164,6 +161,7 @@ class SoundCloudSearcher:
     """
 
     platform = "soundcloud"
+    alias_searches = MAX_ALIAS_SEARCHES
 
     def __init__(self, client, cache: SearchCache) -> None:
         self._client = client
@@ -310,7 +308,7 @@ def resolve_release(
                 source = replace(source, artists=tuple(source.artists) + tuple(names))
                 decision = decide(source, seen)
                 if decision.match is None:
-                    for name in names[:MAX_ALIAS_SEARCHES]:
+                    for name in names[: searcher.alias_searches]:
                         query = f"{name} {search_title(source.title)}"
                         seen += [c for c in searcher.search(query) if c.id not in blocked]
                     decision = decide(source, seen)
