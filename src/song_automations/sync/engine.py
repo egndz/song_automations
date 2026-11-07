@@ -564,8 +564,8 @@ class SyncEngine:
     def _to_source(self, track: Track, release: Release) -> SourceTrack:
         """Prepares a Discogs track for matching.
 
-        When Discogs has no length, the length of an exact Spotify match stands
-        in, so SoundCloud uploads can still be checked against it.
+        Fan uploads are allowed only for tracks Spotify does not carry, so a
+        Spotify sync before a SoundCloud sync keeps covers out.
 
         Args:
             track: Discogs track.
@@ -574,16 +574,14 @@ class SyncEngine:
         Returns:
             The source track.
         """
-        duration = _duration_ms(track.duration) or self._state.get_reference_duration(
-            release.id, track.position
-        )
         return SourceTrack(
             artists=track.artist_names or (track.artist,),
             title=track.title,
-            duration_ms=duration,
+            duration_ms=_duration_ms(track.duration),
             release_title=release.title,
             labels=track.labels,
             remixers=track.remixers,
+            fan_uploads=not self._state.has_exact_spotify_match(release.id, track.position),
         )
 
     def _save_decision(

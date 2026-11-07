@@ -109,7 +109,7 @@ Matching works release by release and only accepts a candidate that passes every
 
 On Spotify the tool looks for the release as an album first, then runs one search per remaining track. On SoundCloud it also looks at sets and at the label's or artist's own account.
 
-SoundCloud uploads by the artist, the label or the remixer named in the title are trusted. Anyone else's upload (fan uploads, vinyl rips) is only accepted when its length is within 20 seconds of the Discogs length. When Discogs has no length, the length of the exact Spotify match is used, so run Spotify first (`sync all` does). Tested against Spotify, fan uploads without a known length had the wrong length more often than the right one, so they are refused.
+SoundCloud uploads by the artist, the label or a remixer credited on Discogs are trusted (the account name has to match exactly, so tribute accounts such as "FOOT Fighters" do not pass). Anyone else's upload, such as a vinyl rip, is only accepted for tracks Spotify does not carry and only when its length is within 20 seconds of the Discogs length. In a blind check, fan uploads of music that is on Spotify turned out to be covers, tributes or other cuts about as often as the real record, while fan uploads of rare records were mostly genuine rips. Run Spotify before SoundCloud so this works (`sync all` does).
 
 ### Spotify limits
 

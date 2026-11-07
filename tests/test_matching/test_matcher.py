@@ -70,6 +70,7 @@ def soundcloud(title: str, uploader: str, ms: int | None = 300_000, id: str = "x
         ("Fontaines D.C.", "Favourite", soundcloud("Fontaines D.C. - Favourite (Later... with Jools Holland)", "Fontaines D.C.")),
         ("Bicep", "Glue", soundcloud("Bicep - Glue (Live at Printworks)", "Bicep")),
         ("Bicep", "Glue", spotify("Glue - KEXP Session", "Bicep")),
+        ("Stevie Wonder", "Uptight (Everything's Alright)", soundcloud("Stevie Wonder vs The Clash - Uptight", "Stevie Wonder")),
         ("Bicep", "Glue", soundcloud("Bicep - Glue", "someone", ms=45_000)),
         ("Bicep", "Glue", soundcloud("Bicep - Glue", "someone", ms=3_600_000)),
         ("Response & Pliskin", "Soon Forgotten", soundcloud("Response & Pliskin - Soon Forgotten (preview)", "OKBRON")),
@@ -235,8 +236,14 @@ def test_assign_release_leaves_a_track_empty_rather_than_repeat():
         (SourceTrack(("Bicep",), "Glue", duration_ms=269_000), soundcloud("Bicep - Glue", "fan", ms=275_000), True),
         (SourceTrack(("Bicep",), "Glue", duration_ms=269_000), soundcloud("Bicep - Glue", "fan", ms=442_000), False),
         (SourceTrack(("Bicep",), "Glue"), soundcloud("Bicep - Glue", "fan", ms=269_000), False),
-        (SourceTrack(("Bicep",), "Glue"), soundcloud("Bicep - Glue (Pomo Edit)", "Pomo", ms=300_000), True),
+        (SourceTrack(("Bicep",), "Glue (Pomo Edit)", remixers=("Pomo",)), soundcloud("Bicep - Glue (Pomo Edit)", "Pomo", ms=300_000), True),
+        (SourceTrack(("Bicep",), "Glue"), soundcloud("Bicep - Glue (Pomo Edit)", "Pomo", ms=300_000), False),
+        (SourceTrack(("Foo Fighters",), "Long Road To Ruin", fan_uploads=False), soundcloud("Foo Fighters - Long Road To Ruin", "FOOT Fighters", ms=300_000), False),
+        (SourceTrack(("Fontaines D.C.",), "Favourite", fan_uploads=False), soundcloud("Fontaines D.C. - Favourite", "Fontaines DC", ms=300_000), True),
         (SourceTrack(("Sade",), "Smooth Operator", duration_ms=298_000), soundcloud("Sade - Smooth Operator", "Sade Tribute Band", ms=298_000), False),
+        (SourceTrack(("Pet Shop Boys",), "Rent", duration_ms=238_000), soundcloud("Rent (Pet Shop Boys, actually)", "Pet Shop Boys, actually", ms=238_000), False),
+        (SourceTrack(("Led Zeppelin",), "Whole Lotta Love", duration_ms=334_000, fan_uploads=False), soundcloud("Led Zeppelin ~ Whole Lotta Love", "Strat Guy Vic", ms=335_000), False),
+        (SourceTrack(("Led Zeppelin",), "Whole Lotta Love", duration_ms=334_000, fan_uploads=False), soundcloud("Led Zeppelin - Whole Lotta Love", "Led Zeppelin", ms=335_000), True),
     ],
 )
 def test_fan_uploads_need_a_matching_length(source, candidate, accepted):

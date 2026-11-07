@@ -693,30 +693,27 @@ class StateTracker:
                 ),
             )
 
-    def get_reference_duration(self, discogs_release_id: int, track_position: str) -> int | None:
-        """Returns the length of an exact Spotify match, used when Discogs has no length.
-
-        Spotify exact matches agreed with every known Discogs length in testing,
-        so their length is a safe stand in for checking SoundCloud uploads.
+    def has_exact_spotify_match(self, discogs_release_id: int, track_position: str) -> bool:
+        """Checks whether Spotify carries the exact version of a track.
 
         Args:
             discogs_release_id: Discogs release ID.
             track_position: Track position.
 
         Returns:
-            Length in milliseconds, or None.
+            True when an exact Spotify match is stored.
         """
         with self._get_connection() as conn:
             row = conn.execute(
                 """
-                SELECT matched_duration_ms FROM matched_tracks
+                SELECT 1 FROM matched_tracks
                 WHERE discogs_release_id = ? AND discogs_track_position = ?
                   AND destination = 'spotify' AND match_tier = 'exact'
-                  AND matched_duration_ms IS NOT NULL
+                  AND destination_track_id IS NOT NULL
                 """,
                 (discogs_release_id, track_position),
             ).fetchone()
-        return row[0] if row else None
+        return row is not None
 
     def save_missing_track(
         self,

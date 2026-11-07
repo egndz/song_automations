@@ -59,10 +59,10 @@ NEUTRAL_VERSION = re.compile(
 REJECT_MARKERS = re.compile(
     r"\b(cover|covered by|karaoke|tribute|in the style of|originally performed|made famous|"
     r"nightcore|sped up|speed up|slowed|8d audio|type beat|reaction|tutorial|"
-    r"preview|snippet|teaser|clip|sample pack|mashup|mash up|bootleg|"
+    r"preview|snippet|teaser|clip|sample pack|mashup|mash up|bootleg|vs|"
     r"acapella|a cappella|instrumental|piano version|acoustic|"
     r"jools holland|kexp|tiny desk|peel session|bbc session|maida vale|live lounge|audiotree|"
-    r"colors show|live at|live from|live on|in session|unplugged)\b"
+    r"colors show|live at|live from|live on|in session|unplugged|ao vivo|en vivo|en directo|en concierto)\b"
 )
 SOFT_MARKERS = re.compile(
     r"\b(dj set|live set|mixed by|mixtape|podcast|radio show|episode|boiler room|essential mix|"
@@ -108,6 +108,9 @@ class SourceTrack:
         release_title: Title of the release the track is on.
         labels: Label names of the release.
         remixers: Remixers credited on the track but missing from the title.
+        fan_uploads: Whether uploads by strangers may match. Off when Spotify
+            already carries the track, since fan uploads of released music
+            turned out to be covers or tributes about as often as the record.
     """
 
     artists: tuple[str, ...]
@@ -116,6 +119,7 @@ class SourceTrack:
     release_title: str = ""
     labels: tuple[str, ...] = ()
     remixers: tuple[str, ...] = ()
+    fan_uploads: bool = True
 
 
 @dataclass(frozen=True)
@@ -479,32 +483,46 @@ def _confidence(tier: Tier, reading: Reading, delta: int | None, same_release: b
     return round(min(base, 1.0), 2)
 
 
-def _fan_upload_unverified(source: SourceTrack, candidate: Candidate, versions: Sequence[str]) -> bool:
+def _account_is(names: Iterable[str], account: str) -> bool:
+    """Checks whether an account is one of the names, comparing the whole name.
+
+    Account names are not split like artist credits and must match exactly,
+    apart from spaces and punctuation, so neither a tribute act called
+    "Pet Shop Boys, actually" nor one called "FOOT Fighters" passes.
+
+    Args:
+        names: Artist, label or remixer names.
+        account: Uploading account name.
+
+    Returns:
+        True when the account is one of the names.
+    """
+    target = clean(account).replace(" ", "")
+    return bool(target) and any(
+        clean(DISAMBIGUATION.sub("", name)).replace(" ", "") == target for name in names
+    )
+
+
+def _fan_upload_unverified(source: SourceTrack, candidate: Candidate) -> bool:
     """Checks whether an upload by a stranger lacks the evidence that would confirm it.
 
-    Uploads by the artist, the label or the remixer named in the title are
-    trusted. Anyone else's upload must match the Discogs length, so without a
-    known length it is refused, and a cover or tribute account is always refused.
-    Checked against Spotify, fan uploads without a known length had the wrong
-    length more often than the right one.
+    Uploads by the artist, the label or a remixer Discogs credits are trusted.
+    Anyone else's upload, including a self-made remix or edit, counts only for music Spotify does not carry
+    (vinyl rips of rare records), and only with a length that matches Discogs.
 
     Args:
         source: Source track.
         candidate: Candidate track.
-        versions: Version annotations of the reading that passed.
 
     Returns:
         True when the candidate is an unconfirmed fan upload.
     """
     if not candidate.uploader:
         return False
-    uploader = (candidate.uploader,)
-    if artists_agree((*source.artists, *source.remixers), uploader) or artists_agree(source.labels, uploader):
+    if _account_is((*source.artists, *source.remixers, *source.labels), candidate.uploader):
         return False
     name = clean(candidate.uploader)
-    if name and any(name in clean(version) for version in versions):
-        return False
-    if COVER_ACCOUNT.search(name.replace(" ", "")):
+    if not source.fan_uploads or COVER_ACCOUNT.search(name.replace(" ", "")):
         return True
     if source.duration_ms and candidate.duration_ms:
         return abs(source.duration_ms - candidate.duration_ms) > DURATION_TOLERANCE_MS
@@ -536,7 +554,10 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
             continue
         reason = "artist"
         if reading.kind == "label":
-            if not artists_agree(source.labels, reading.artists):
+            if not _account_is(source.labels, candidate.uploader):
+                continue
+        elif reading.kind == "uploader":
+            if not _account_is(source.artists, candidate.uploader):
                 continue
         elif not artists_agree(source.artists, reading.artists):
             continue
@@ -551,7 +572,7 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         tier = Tier.OTHER_MIX
     elif duration_reason:
         return Rejection(candidate, duration_reason)
-    if _fan_upload_unverified(source, candidate, parse_title(reading.title)[1]):
+    if _fan_upload_unverified(source, candidate):
         return Rejection(candidate, "fan_unverified")
     delta = (
         abs(source.duration_ms - candidate.duration_ms)

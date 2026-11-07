@@ -919,10 +919,10 @@ class TestGateMatcherMigration:
 
     @pytest.mark.parametrize(
         ("destination", "tier", "expected"),
-        [("spotify", "exact", 269_000), ("spotify", "other_mix", None), ("soundcloud", "exact", None)],
+        [("spotify", "exact", True), ("spotify", "other_mix", False), ("soundcloud", "exact", False)],
     )
-    def test_reference_duration_comes_only_from_exact_spotify_matches(self, tmp_path, destination, tier, expected):
-        """Only an exact Spotify match lends its length to SoundCloud checks."""
+    def test_only_exact_spotify_matches_count_as_carried(self, tmp_path, destination, tier, expected):
+        """Only an exact Spotify match marks a track as carried by Spotify."""
         tracker = StateTracker(tmp_path / "state.db")
         tracker.save_matched_track(1, "A1", "x", "y", destination, "id", 0.9, match_tier=tier, matched_duration_ms=269_000)
-        assert tracker.get_reference_duration(1, "A1") == expected
+        assert tracker.has_exact_spotify_match(1, "A1") is expected
