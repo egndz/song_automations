@@ -60,7 +60,9 @@ REJECT_MARKERS = re.compile(
     r"\b(cover|covered by|karaoke|tribute|in the style of|originally performed|made famous|"
     r"nightcore|sped up|speed up|slowed|8d audio|type beat|reaction|tutorial|"
     r"preview|snippet|teaser|clip|sample pack|mashup|mash up|bootleg|"
-    r"acapella|a cappella|instrumental|piano version|acoustic)\b"
+    r"acapella|a cappella|instrumental|piano version|acoustic|"
+    r"jools holland|kexp|tiny desk|peel session|bbc session|maida vale|live lounge|audiotree|"
+    r"colors show|live at|live from|live on|in session|unplugged)\b"
 )
 SOFT_MARKERS = re.compile(
     r"\b(dj set|live set|mixed by|mixtape|podcast|radio show|episode|boiler room|essential mix|"
