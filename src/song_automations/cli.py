@@ -182,7 +182,8 @@ def sync_spotify(
         float | None,
         typer.Option(
             "--min-confidence",
-            help="Minimum confidence threshold (0.0-1.0).",
+            help="Ignored. Matching now uses fixed checks instead of a score.",
+            hidden=True,
         ),
     ] = None,
     force_rematch: Annotated[
@@ -252,7 +253,8 @@ def sync_soundcloud(
         float | None,
         typer.Option(
             "--min-confidence",
-            help="Minimum confidence threshold (0.0-1.0).",
+            help="Ignored. Matching now uses fixed checks instead of a score.",
+            hidden=True,
         ),
     ] = None,
     force_rematch: Annotated[
