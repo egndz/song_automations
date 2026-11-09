@@ -1,0 +1,279 @@
+"""Tests for the gate-based matcher, using mistakes seen in the real collection."""
+
+import pytest
+
+from song_automations.matching.matcher import (
+    Candidate,
+    Match,
+    Reading,
+    Rejection,
+    SourceTrack,
+    Tier,
+    assign_release,
+    classify_tier,
+    clean,
+    decide,
+    evaluate,
+    parse_title,
+    soundcloud_candidate,
+    soundcloud_readings,
+    spotify_candidate,
+)
+
+
+def spotify(title: str, artist: str, ms: int | None = None, id: str = "x", album: str = "") -> Candidate:
+    """Builds a Spotify style candidate.
+
+    Args:
+        title: Track title.
+        artist: Artist name.
+        ms: Duration.
+        id: Track id.
+        album: Album name.
+
+    Returns:
+        The candidate.
+    """
+    return spotify_candidate(
+        {"id": id, "name": title, "artists": [{"name": artist}], "duration_ms": ms, "album": {"name": album}}
+    )
+
+
+def soundcloud(title: str, uploader: str, ms: int | None = 300_000, id: str = "x", artist: str = "") -> Candidate:
+    """Builds a SoundCloud style candidate.
+
+    Args:
+        title: Upload title.
+        uploader: Account name.
+        ms: Duration.
+        id: Track id.
+        artist: Metadata artist.
+
+    Returns:
+        The candidate.
+    """
+    return soundcloud_candidate(
+        {"id": id, "title": title, "user": {"username": uploader}, "duration": ms, "metadata_artist": artist}
+    )
+
+
+@pytest.mark.parametrize(
+    ("artist", "title", "candidate"),
+    [
+        ("Eddy Love", "The Fear", spotify("The Fear", "Blue Oyster Cult")),
+        ("T-Total", "Afterglow", spotify("Afterglow", "Ed Sheeran")),
+        ("Diana Ross", "Upside Down", spotify("Upside Down (Cover)", "Diana Ross")),
+        ("Fontaines D.C.", "Romance", soundcloud("Romance", "Roman Holiday")),
+        ("Muddy Waters", "Got My Mojo Working (Part 1)", spotify("Got My Mojo Working (Part 2)", "Muddy Waters")),
+        ("Bicep", "Glue", spotify("Glue", "Bicep Tribute Band")),
+        ("Bicep", "Glue", soundcloud("Bicep - Glue (karaoke)", "someone")),
+        ("Fontaines D.C.", "Favourite", soundcloud("Fontaines D.C. - Favourite (Later... with Jools Holland)", "Fontaines D.C.")),
+        ("Bicep", "Glue", soundcloud("Bicep - Glue (Live at Printworks)", "Bicep")),
+        ("Bicep", "Glue", spotify("Glue - KEXP Session", "Bicep")),
+        ("Stevie Wonder", "Uptight (Everything's Alright)", soundcloud("Stevie Wonder vs The Clash - Uptight", "Stevie Wonder")),
+        ("Bicep", "Glue", soundcloud("Bicep - Glue", "someone", ms=45_000)),
+        ("Bicep", "Glue", soundcloud("Bicep - Glue", "someone", ms=3_600_000)),
+        ("Response & Pliskin", "Soon Forgotten", soundcloud("Response & Pliskin - Soon Forgotten (preview)", "OKBRON")),
+    ],
+)
+def test_wrong_candidates_are_refused(artist, title, candidate):
+    """Known wrong matches never pass, whatever else agrees."""
+    assert isinstance(evaluate(SourceTrack((artist,), title), candidate), Rejection)
+
+
+@pytest.mark.parametrize(
+    ("artist", "title", "candidate", "tier"),
+    [
+        ("Bicep", "Glue", spotify("Glue", "Bicep"), Tier.EXACT),
+        ("Bicep", "Glue", soundcloud("BICEP | GLUE", "BICEP"), Tier.EXACT),
+        ("Umberto Lumber", "Between Those Sheets", soundcloud("B2. Umberto Lumber - Between Those Sheets", "HUGH"), Tier.EXACT),
+        ("Teknoafro", "Mama Africa", soundcloud("A1 TEKNOAFRO - MAMA AFRICA", "Dualismo Sound"), Tier.EXACT),
+        ("Chain Reaction", "Dance Freak", soundcloud("Chain Reaction - Dance Freak", "x"), Tier.EXACT),
+        ("Westcoast Goddess", "Change Is Comin'", soundcloud("PREMIERE: Westcoast Goddess - Change Is Comin [Intrinsic]", "Juno"), Tier.EXACT),
+        ("Fio Fa", "In To Da Groove (New Jackson Remix)", soundcloud("Fio Fa - In To Da Groove (New Jackson Remix)", "Pear"), Tier.EXACT),
+        ("Fio Fa", "In To Da Groove (New Jackson Remix)", spotify("In To Da Groove - New Jackson Mix", "Fio Fa"), Tier.EXACT),
+        ("Cyre", "Last Chance (Club Version)", soundcloud("CYRE - LAST CHANCE", "x"), Tier.ORIGINAL),
+        ("Bicep", "Opal", soundcloud("Bicep - Opal (Four Tet Remix)", "x"), Tier.OTHER_MIX),
+        ("Dj Spooge", "Sit Yourself Down", soundcloud("Sit Yourself Down [LG001]", "DJ SPOOGE"), Tier.EXACT),
+        ("Beyoncé", "Halo", spotify("Halo", "Beyonce"), Tier.EXACT),
+        ("Model 500", "No UFOs", spotify("No UFO's", "Model500"), Tier.EXACT),
+        ("Earth, Wind & Fire", "September", spotify("September", "Earth, Wind & Fire"), Tier.EXACT),
+        ("Bicep", "Glue", spotify("Glue - 2017 Remaster", "Bicep"), Tier.EXACT),
+    ],
+)
+def test_right_candidates_are_accepted_on_the_right_tier(artist, title, candidate, tier):
+    """Real title shapes pass, placed at the correct rung of the version ladder."""
+    outcome = evaluate(SourceTrack((artist,), title, duration_ms=candidate.duration_ms), candidate)
+    assert isinstance(outcome, Match)
+    assert outcome.tier == tier
+
+
+def test_marker_is_forgiven_when_source_title_carries_it():
+    """A source that is itself a live recording may match a live upload."""
+    outcome = evaluate(SourceTrack(("Bicep",), "Glue (Live)"), spotify("Glue (Live)", "Bicep"))
+    assert isinstance(outcome, Match)
+
+
+@pytest.mark.parametrize(("delta", "accepted"), [(1_000, True), (60_000, False)])
+def test_gig_word_is_forgiven_only_at_the_same_length(delta, accepted):
+    """A label channel named after a venue is fine if the length is the record's."""
+    source = SourceTrack(("Chaos In The CBD",), "Significant Others", duration_ms=320_000)
+    candidate = soundcloud('Chaos In The CBD "Significant Others" - Boiler Room Debuts', "Boiler Room", ms=320_000 + delta)
+    assert isinstance(evaluate(source, candidate), Match) is accepted
+
+
+def test_label_account_upload_is_accepted_only_for_the_release_label():
+    """A bare title on an account counts if that account is the label."""
+    source = SourceTrack(("Nobody",), "Deep Track", labels=("Ki Records",))
+    assert isinstance(evaluate(source, soundcloud("Deep Track", "Ki Records")), Match)
+    assert isinstance(evaluate(source, soundcloud("Deep Track", "Other Records")), Rejection)
+
+
+def test_different_length_of_same_named_version_drops_a_tier():
+    """A length far from the source means it is not really the same mix."""
+    source = SourceTrack(("Bicep",), "Glue", duration_ms=300_000)
+    outcome = evaluate(source, spotify("Glue", "Bicep", ms=200_000))
+    assert outcome.tier == Tier.OTHER_MIX
+
+
+@pytest.mark.parametrize(
+    ("source", "candidate", "tier"),
+    [
+        ([], [], Tier.EXACT),
+        ([], ["radio edit"], Tier.OTHER_MIX),
+        (["club version"], [], Tier.ORIGINAL),
+        (["hardfloor remix"], ["hardfloor mix"], Tier.EXACT),
+        (["hardfloor remix"], ["carl craig remix"], Tier.OTHER_MIX),
+    ],
+)
+def test_classify_tier(source, candidate, tier):
+    """The version ladder follows the agreed preference."""
+    assert classify_tier(source, candidate) == tier
+
+
+@pytest.mark.parametrize(
+    ("title", "base", "versions"),
+    [
+        ("Track (Hardfloor Remix)", "track", ["hardfloor remix"]),
+        ("Track - Radio Edit", "track", ["radio edit"]),
+        ("Track (Original Mix)", "track", []),
+        ("Track [LG001]", "track", []),
+        ("Track Pt. 2", "track part 2", []),
+        ("Aoi Galasu Dama = Blue Glass Ball", "aoi galasu dama", []),
+        ("Track feat. Someone", "track", []),
+    ],
+)
+def test_parse_title(title, base, versions):
+    """Titles split into base and version."""
+    bases, found = parse_title(title)
+    assert bases[0] == base
+    assert found == versions
+
+
+def test_parse_title_keeps_translated_title():
+    """Both sides of an equals sign can match."""
+    assert "blue glass ball" in parse_title("Aoi Galasu Dama = Blue Glass Ball")[0]
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("Beyoncé", "beyonce"), ("AC/DC", "ac dc"), ("Rock & Roll", "rock and roll")])
+def test_clean(raw, expected):
+    """Normalization removes accents and punctuation."""
+    assert clean(raw) == expected
+
+
+def test_ranking_prefers_exact_then_original_then_other():
+    """The best tier wins regardless of search order or plays."""
+    source = SourceTrack(("Bicep",), "Glue (Dub)")
+    decision = decide(
+        source,
+        [
+            soundcloud("Bicep - Glue (Four Tet Remix)", "Bicep", id="other"),
+            soundcloud("Bicep - Glue", "Bicep", id="original"),
+            soundcloud("Bicep - Glue (Dub)", "Bicep", id="exact"),
+        ],
+    )
+    assert decision.match.candidate.id == "exact"
+    assert [m.candidate.id for m in decision.alternatives] == ["original", "other"]
+
+
+def test_ranking_prefers_the_source_release():
+    """Among equal versions, the original release beats a compilation."""
+    source = SourceTrack(("Bicep",), "Glue", release_title="Bicep")
+    decision = decide(
+        source,
+        [
+            spotify("Glue", "Bicep", id="comp", album="Ministry Of Sound 2017"),
+            spotify("Glue", "Bicep", id="album", album="Bicep"),
+        ],
+    )
+    assert decision.match.candidate.id == "album"
+
+
+def test_assign_release_gives_each_track_its_own_upload():
+    """Two tracks falling back to one upload never share it."""
+    candidates = [soundcloud("Bicep - Glue", "Bicep", id="plain"), soundcloud("Bicep - Glue (Dub)", "Bicep", id="dub")]
+    decisions = [
+        decide(SourceTrack(("Bicep",), "Glue (Remix)"), candidates),
+        decide(SourceTrack(("Bicep",), "Glue (Dub)"), candidates),
+    ]
+    assigned = assign_release(decisions)
+    assert assigned[1].candidate.id == "dub"
+    assert assigned[0].candidate.id == "plain"
+
+
+def test_assign_release_leaves_a_track_empty_rather_than_repeat():
+    """When only one upload exists, the second track gets nothing."""
+    candidate = [soundcloud("Bicep - Glue", "Bicep", id="only")]
+    decisions = [decide(SourceTrack(("Bicep",), "Glue"), candidate), decide(SourceTrack(("Bicep",), "Glue (Dub)"), candidate)]
+    assert [m.candidate.id if m else None for m in assign_release(decisions)] == ["only", None]
+
+
+@pytest.mark.parametrize(
+    ("source", "candidate", "accepted"),
+    [
+        (SourceTrack(("Bicep",), "Glue"), soundcloud("Bicep - Glue", "Bicep"), True),
+        (SourceTrack(("Bicep",), "Glue", labels=("Ninja Tune",)), soundcloud("Bicep - Glue", "Ninja Tune"), True),
+        (SourceTrack(("Bicep",), "Glue", duration_ms=269_000), soundcloud("Bicep - Glue", "fan", ms=275_000), True),
+        (SourceTrack(("Bicep",), "Glue", duration_ms=269_000), soundcloud("Bicep - Glue", "fan", ms=442_000), False),
+        (SourceTrack(("Bicep",), "Glue"), soundcloud("Bicep - Glue", "fan", ms=269_000), False),
+        (SourceTrack(("Bicep",), "Glue (Pomo Edit)", remixers=("Pomo",)), soundcloud("Bicep - Glue (Pomo Edit)", "Pomo", ms=300_000), True),
+        (SourceTrack(("Bicep",), "Glue"), soundcloud("Bicep - Glue (Pomo Edit)", "Pomo", ms=300_000), False),
+        (SourceTrack(("Foo Fighters",), "Long Road To Ruin", fan_uploads=False), soundcloud("Foo Fighters - Long Road To Ruin", "FOOT Fighters", ms=300_000), False),
+        (SourceTrack(("Fontaines D.C.",), "Favourite", fan_uploads=False), soundcloud("Fontaines D.C. - Favourite", "Fontaines DC", ms=300_000), True),
+        (SourceTrack(("Sade",), "Smooth Operator", duration_ms=298_000), soundcloud("Sade - Smooth Operator", "Sade Tribute Band", ms=298_000), False),
+        (SourceTrack(("Pet Shop Boys",), "Rent", duration_ms=238_000), soundcloud("Rent (Pet Shop Boys, actually)", "Pet Shop Boys, actually", ms=238_000), False),
+        (SourceTrack(("Led Zeppelin",), "Whole Lotta Love", duration_ms=334_000, fan_uploads=False), soundcloud("Led Zeppelin ~ Whole Lotta Love", "Strat Guy Vic", ms=335_000), False),
+        (SourceTrack(("Led Zeppelin",), "Whole Lotta Love", duration_ms=334_000, fan_uploads=False), soundcloud("Led Zeppelin - Whole Lotta Love", "Led Zeppelin", ms=335_000), True),
+    ],
+)
+def test_fan_uploads_need_a_matching_length(source, candidate, accepted):
+    """Strangers' uploads count only when the length confirms them, the artist, label or remixer always count."""
+    assert isinstance(evaluate(source, candidate), Match) is accepted
+
+
+@pytest.mark.parametrize(
+    ("title", "kind"),
+    [
+        ("Bicep - Glue", "dash"),
+        ("Glue - Bicep", "dash_reversed"),
+        ('Bicep "Glue"', "quoted"),
+        ("Bicep: Glue", "colon"),
+        ("Glue by Bicep", "by"),
+    ],
+)
+def test_soundcloud_readings_find_the_artist(title, kind):
+    """Every common upload format yields the right artist and title."""
+    readings = soundcloud_readings(title, "someone")
+    assert any(r.kind == kind and clean(r.artists[0]) == "bicep" and clean(r.title) == "glue" for r in readings)
+
+
+def test_decide_is_independent_of_candidate_order():
+    """The same candidates in any order give the same choice."""
+    source = SourceTrack(("Bicep",), "Glue")
+    items = [soundcloud("Bicep - Glue", "Bicep", id=str(i)) for i in range(4)]
+    assert decide(source, items).match.candidate.id == decide(source, items[::-1]).match.candidate.id
+
+
+def test_reading_is_hashable():
+    """Readings can be deduplicated."""
+    assert len({Reading(("a",), "b"), Reading(("a",), "b")}) == 1

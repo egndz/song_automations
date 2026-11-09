@@ -15,6 +15,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from song_automations.clients.http import DEFAULT_TIMEOUT, RETRYABLE_EXCEPTIONS, handle_rate_limit
 from song_automations.config import Settings
+from song_automations.matching.matcher import clean
 
 
 @dataclass
@@ -171,6 +172,7 @@ class SoundCloudClient:
             "refresh_token": self._refresh_token,
         }
         self._token_path.write_text(json.dumps(data))
+        self._token_path.chmod(0o600)
 
     def _refresh_access_token(self) -> bool:
         """Refresh the access token using the refresh token.
@@ -365,6 +367,91 @@ class SoundCloudClient:
             results.append(SearchResult(track=track, is_verified=is_verified))
 
         return results
+
+    def _get_json(self, url: str, params: dict | None = None):
+        """Sends an authenticated GET and decodes the response.
+
+        Args:
+            url: Target URL.
+            params: Query parameters.
+
+        Returns:
+            Decoded JSON.
+        """
+        response = self._request("GET", url, params=params)
+        if self._handle_auth_error(response):
+            response = self._request("GET", url, params=params)
+        handle_rate_limit(response)
+        response.raise_for_status()
+        return response.json()
+
+    @staticmethod
+    def _rows(body) -> list[dict]:
+        """Reads the items of a list or paged response.
+
+        Args:
+            body: Decoded JSON.
+
+        Returns:
+            Items.
+        """
+        return body if isinstance(body, list) else (body or {}).get("collection", [])
+
+    def search_raw(self, query: str, limit: int = 50) -> list[dict]:
+        """Searches playable tracks and returns the raw items.
+
+        Args:
+            query: Search query.
+            limit: Maximum results.
+
+        Returns:
+            Raw tracks.
+        """
+        params = {"q": query, "limit": limit, "access": "playable"}
+        return self._rows(self._get_json(f"{self.API_BASE}/tracks", params))
+
+    def search_playlists_raw(self, query: str, limit: int = 20) -> list[dict]:
+        """Searches sets with their tracks.
+
+        Args:
+            query: Search query.
+            limit: Maximum results.
+
+        Returns:
+            Raw sets.
+        """
+        params = {"q": query, "limit": limit, "show_tracks": "true", "access": "playable"}
+        return self._rows(self._get_json(f"{self.API_BASE}/playlists", params))
+
+    def account_tracks_raw(self, name: str, max_accounts: int = 2, max_pages: int = 3) -> list[dict]:
+        """Lists the uploads of the accounts named exactly like an artist or label.
+
+        Args:
+            name: Artist or label name.
+            max_accounts: How many same-named accounts to read, biggest first.
+            max_pages: Pages to read per account.
+
+        Returns:
+            Raw tracks.
+        """
+        key = clean(name)
+        users = [
+            user
+            for user in self._rows(self._get_json(f"{self.API_BASE}/users", {"q": name, "limit": 20}))
+            if clean(user.get("username", "")) == key and (user.get("track_count") or 0) > 0
+        ]
+        users.sort(key=lambda user: -(user.get("followers_count") or 0))
+        tracks: list[dict] = []
+        for user in users[:max_accounts]:
+            url = f"{self.API_BASE}/users/{user.get('urn') or user['id']}/tracks"
+            params = {"limit": 200, "access": "playable", "linked_partitioning": "true"}
+            for _ in range(max_pages):
+                body = self._get_json(url, params)
+                tracks += self._rows(body)
+                if not isinstance(body, dict) or not body.get("next_href"):
+                    break
+                url, params = body["next_href"], None
+        return tracks
 
     def get_user_playlists(self, prefix: str | None = None) -> list[SoundCloudPlaylist]:
         """Get all playlists owned by the current user.
