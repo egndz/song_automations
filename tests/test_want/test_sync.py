@@ -165,6 +165,21 @@ def test_other_mix_of_the_track_counts_as_the_record():
     assert find_pressing(discogs, [Reading(("Bicep",), "Glue")]) == 1
 
 
+@pytest.mark.parametrize(
+    ("wanted", "tracks", "expected"),
+    [
+        ("Glue (Hardfloor Remix)", {1: [pressing("Glue")], 2: [pressing("Glue (Hardfloor Remix)")]}, 2),
+        ("Glue - Hardfloor Remix", {1: [pressing("Glue")], 2: [pressing("Glue (Hardfloor Remix)")]}, 2),
+        ("Glue (Hardfloor Remix)", {1: [pressing("Glue")], 2: [pressing("Other")]}, 1),
+        ("Glue", {1: [pressing("Glue (Dub)")], 2: [pressing("Glue")]}, 2),
+    ],
+)
+def test_exact_version_beats_an_earlier_other_mix(wanted, tracks, expected):
+    """The record holding the exact mix wins, and another mix is only a fallback."""
+    discogs = FakeDiscogs({"Bicep": [{"id": 1, "year": "2017"}, {"id": 2, "year": "2019"}]}, tracks)
+    assert find_pressing(discogs, [Reading(("Bicep",), wanted)]) == expected
+
+
 def test_wrong_artist_on_the_record_is_refused():
     """A record with the same title by someone else is not added."""
     discogs = FakeDiscogs({"Bicep": [{"id": 1, "year": "2017"}]}, {1: [pressing(artist="Someone Else")]})

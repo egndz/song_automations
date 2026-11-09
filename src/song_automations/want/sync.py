@@ -7,6 +7,7 @@ from song_automations.matching.matcher import (
     Match,
     Reading,
     SourceTrack,
+    Tier,
     evaluate,
     soundcloud_readings,
 )
@@ -63,8 +64,8 @@ def track_label(track) -> str:
     return f"{track.artist} | {track.title}"
 
 
-def release_has_track(discogs, release_id: int, reading: Reading) -> bool:
-    """Checks that a release really contains the track, whatever the mix.
+def release_tier(discogs, release_id: int, reading: Reading) -> Tier | None:
+    """Finds how closely the best track of a release agrees with the wanted track.
 
     Args:
         discogs: Discogs client.
@@ -72,9 +73,10 @@ def release_has_track(discogs, release_id: int, reading: Reading) -> bool:
         reading: Who and what the track is.
 
     Returns:
-        True when any track of the release passes the matching gates.
+        Best tier among the tracks that pass the matching gates, or None.
     """
     source = SourceTrack(artists=reading.artists, title=reading.title)
+    best: Tier | None = None
     for track in discogs.get_release_tracks(release_id):
         names = track.artist_names or (track.artist,)
         candidate = Candidate(
@@ -82,13 +84,17 @@ def release_has_track(discogs, release_id: int, reading: Reading) -> bool:
             raw_title=track.title,
             readings=(Reading(names, track.title),),
         )
-        if isinstance(evaluate(source, candidate), Match):
-            return True
-    return False
+        decision = evaluate(source, candidate)
+        if isinstance(decision, Match) and (best is None or decision.tier > best):
+            best = decision.tier
+    return best
 
 
 def find_pressing(discogs, readings: list[Reading]) -> int | None:
     """Finds the earliest vinyl pressing that verifiably holds a track.
+
+    A pressing with the exact version wins over an earlier one that only holds
+    another mix, so wanting a remix never lands on the original single.
 
     Args:
         discogs: Discogs client.
@@ -97,14 +103,18 @@ def find_pressing(discogs, readings: list[Reading]) -> int | None:
     Returns:
         Discogs release id, or None.
     """
+    fallback: tuple[Tier, int] | None = None
     for reading in readings:
         artist = reading.artists[0] if reading.artists else ""
         results = discogs.search_vinyl(artist, reading.title)
         results.sort(key=lambda r: (int(r.get("year") or UNKNOWN_YEAR), r["id"]))
         for result in results[:MAX_RELEASES_CHECKED]:
-            if release_has_track(discogs, result["id"], reading):
+            tier = release_tier(discogs, result["id"], reading)
+            if tier == Tier.EXACT:
                 return result["id"]
-    return None
+            if tier is not None and (fallback is None or tier > fallback[0]):
+                fallback = (tier, result["id"])
+    return fallback[1] if fallback else None
 
 
 def sync_want_playlist(client, destination: str, discogs, state, playlist_name: str, dry_run: bool = False) -> WantResult:
