@@ -6,6 +6,7 @@ Sync your Discogs collection folders to Spotify and SoundCloud playlists.
 
 - **Folder-based sync**: Each Discogs folder becomes a playlist (e.g., "Discogs - Electronic")
 - **Wantlist support**: Your wantlist syncs as "Discogs - Wantlist"
+- **Want playlist**: Add a track to a playlist named "Want" and its vinyl lands on your Discogs wantlist
 - **Strict track matching**: Every match has to pass artist, title, version and length checks, so wrong songs stay out
 - **Full sync**: Additions AND removals - keeps playlists in sync with your collection
 - **Missing tracks report**: Generate CSV/JSON reports of tracks that couldn't be found
@@ -57,6 +58,15 @@ song-automations sync soundcloud
 
 ```bash
 song-automations sync all
+```
+
+### Want playlist
+
+Add any track to a playlist called `Want` on Spotify or SoundCloud. On the next sync (or with the command below) the tool finds the earliest vinyl pressing whose tracklist really holds that track and adds it to your Discogs wantlist. Each track is handled once; tracks with no verified vinyl are retried on later runs. Set `WANT_PLAYLIST_NAME` to use another playlist name.
+
+```bash
+song-automations want sync --platform spotify --dry-run
+song-automations want sync --platform all
 ```
 
 ### View status

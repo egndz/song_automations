@@ -21,6 +21,7 @@ class Settings(BaseSettings):
         soundcloud_client_secret: SoundCloud application client secret.
         soundcloud_redirect_uri: OAuth redirect URI for SoundCloud authentication.
         data_dir: Directory for storing SQLite database and cache files.
+        want_playlist_name: Playlist whose tracks go on the Discogs wantlist.
         playlist_prefix: Prefix for created playlists.
         spotify_search_budget: Spotify searches one run may make.
         min_confidence: Minimum confidence threshold for track matching.
@@ -69,6 +70,11 @@ class Settings(BaseSettings):
     data_dir: Path = Field(
         default=Path.home() / ".song_automations",
         description="Directory for storing application data",
+    )
+
+    want_playlist_name: str = Field(
+        default="Want",
+        description="Tracks added to this playlist go on the Discogs wantlist",
     )
 
     playlist_prefix: str = Field(

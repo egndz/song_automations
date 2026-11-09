@@ -23,6 +23,7 @@ from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
 from song_automations.state.tracker import StateTracker
 from song_automations.sync.engine import OperationType, SyncEngine, SyncResult
+from song_automations.want.sync import sync_want_playlist
 
 app = typer.Typer(
     name="song-automations",
@@ -31,8 +32,10 @@ app = typer.Typer(
 )
 sync_app = typer.Typer(help="Sync playlists to music platforms.")
 report_app = typer.Typer(help="Generate reports.")
+want_app = typer.Typer(help="Turn the Want playlist into Discogs wantlist entries.")
 app.add_typer(sync_app, name="sync")
 app.add_typer(report_app, name="report")
+app.add_typer(want_app, name="want")
 
 console = Console()
 
@@ -93,6 +96,7 @@ def _run_sync(
 
     if platform == "spotify":
         client = SpotifyClient(settings)
+        _run_want(settings, client, platform, discogs_client, state_tracker, dry_run)
         return engine.sync_to_spotify(
             playlist_client=client,
             include_wantlist=not exclude_wantlist,
@@ -101,12 +105,60 @@ def _run_sync(
         )
     else:
         client = SoundCloudClient(settings)
+        _run_want(settings, client, platform, discogs_client, state_tracker, dry_run)
         return engine.sync_to_soundcloud(
             playlist_client=client,
             include_wantlist=not exclude_wantlist,
             folder_names=folder_names,
             dry_run=dry_run,
         )
+
+
+def _run_want(settings, client, platform, discogs_client, state_tracker, dry_run) -> None:
+    """Processes the Want playlist of a platform and prints what happened.
+
+    Args:
+        settings: Application settings.
+        client: Platform client.
+        platform: Platform name.
+        discogs_client: Discogs client.
+        state_tracker: State tracker.
+        dry_run: If True, change nothing.
+    """
+    result = sync_want_playlist(
+        client, platform, discogs_client, state_tracker, settings.want_playlist_name, dry_run
+    )
+    for label in result.added:
+        console.print(f"[green]Added to wantlist:[/green] {label}")
+    for label in result.already_wanted:
+        console.print(f"[dim]Already on wantlist:[/dim] {label}")
+    for label in result.not_found:
+        console.print(f"[yellow]No vinyl found on Discogs:[/yellow] {label}")
+
+
+@want_app.command("sync")
+def want_sync(
+    platform: Annotated[
+        str,
+        typer.Option("--platform", "-p", help="spotify, soundcloud or all."),
+    ] = "all",
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", "-n", help="Show what would be added without adding it."),
+    ] = False,
+) -> None:
+    """Put the vinyl of new tracks in the Want playlist on the Discogs wantlist."""
+    settings = _init_settings()
+    discogs_client = DiscogsClient(settings)
+    state_tracker = StateTracker(settings.db_path)
+    try:
+        if platform in ("spotify", "all"):
+            _run_want(settings, SpotifyClient(settings), "spotify", discogs_client, state_tracker, dry_run)
+        if platform in ("soundcloud", "all"):
+            _run_want(settings, SoundCloudClient(settings), "soundcloud", discogs_client, state_tracker, dry_run)
+    except (RateLimitedError, ReauthRequiredError) as error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(2) from error
 
 
 def _guarded_sync(*args, **kwargs) -> SyncResult:

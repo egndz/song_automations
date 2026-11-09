@@ -278,6 +278,15 @@ class StateTracker:
                     ON sync_logs(created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_sync_logs_destination
                     ON sync_logs(destination);
+                CREATE TABLE IF NOT EXISTS handled_wants (
+                    destination TEXT NOT NULL,
+                    destination_track_id TEXT NOT NULL,
+                    discogs_release_id INTEGER,
+                    status TEXT NOT NULL,
+                    label TEXT,
+                    handled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (destination, destination_track_id)
+                );
                 CREATE TABLE IF NOT EXISTS search_cache (
                     platform TEXT NOT NULL,
                     query_key TEXT NOT NULL,
@@ -341,6 +350,49 @@ class StateTracker:
             "DELETE FROM matched_tracks WHERE review_status IS NULL OR review_status = 'pending'"
         )
         conn.execute(f"PRAGMA user_version = {MATCHER_SCHEMA_VERSION}")
+
+    def get_handled_wants(self, destination: Destination) -> set[str]:
+        """Lists the Want playlist tracks already dealt with.
+
+        Args:
+            destination: Platform.
+
+        Returns:
+            Platform track ids.
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT destination_track_id FROM handled_wants WHERE destination = ?",
+                (destination,),
+            ).fetchall()
+        return {row[0] for row in rows}
+
+    def save_handled_want(
+        self,
+        destination: Destination,
+        track_id: str,
+        release_id: int | None,
+        status: str,
+        label: str,
+    ) -> None:
+        """Remembers that a Want playlist track was dealt with.
+
+        Args:
+            destination: Platform.
+            track_id: Platform track id.
+            release_id: Discogs release chosen.
+            status: added or already_wanted.
+            label: Readable track label.
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO handled_wants
+                (destination, destination_track_id, discogs_release_id, status, label)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (destination, track_id, release_id, status, label),
+            )
 
     def get_search_cache(self, platform: str, key: str, max_age_days: int = 30) -> list | dict | None:
         """Reads a stored search response.
