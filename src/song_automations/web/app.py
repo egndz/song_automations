@@ -135,9 +135,9 @@ def create_app() -> FastAPI:
         }
 
         return templates.TemplateResponse(
+            request,
             "index.html",
             {
-                "request": request,
                 "tracks_with_info": tracks_with_info,
                 "stats": stats,
                 "destination_filter": destination,
@@ -385,9 +385,9 @@ def create_app() -> FastAPI:
         }
 
         return templates.TemplateResponse(
+            request,
             "logs.html",
             {
-                "request": request,
                 "logs": logs,
                 "recent_syncs": recent_syncs,
                 "sync_summary": sync_summary,
