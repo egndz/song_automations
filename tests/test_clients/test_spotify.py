@@ -1,5 +1,6 @@
 """Tests for Spotify client."""
 
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -439,12 +440,59 @@ class TestSpotifyLogin:
             {"tracks": {"items": [{"id": "1"}]}},
         ]
         assert client.search_raw("q") == [{"id": "1"}]
-        stale = tmp_path / ".spotify_cache.stale"
+        (stale,) = tmp_path.glob(".spotify_cache.stale-*")
         assert stale.read_text() == "old login"
         assert client._cache_path.read_text() == "new login"
         assert stale.stat().st_mode & 0o777 == 0o600
         assert client._cache_path.stat().st_mode & 0o777 == 0o600
         client._auth.get_access_token.assert_called_once_with(as_dict=False, check_cache=False)
+
+    @pytest.mark.parametrize(
+        ("earlier", "expected_name"),
+        [
+            ([], ".spotify_cache.stale-20261110-043000"),
+            ([".spotify_cache.stale"], ".spotify_cache.stale-20261110-043000"),
+            ([".spotify_cache.stale-20261109-043000"], ".spotify_cache.stale-20261110-043000"),
+            ([".spotify_cache.stale-20261110-043000"], ".spotify_cache.stale-20261110-043000-2"),
+            (
+                [".spotify_cache.stale-20261110-043000", ".spotify_cache.stale-20261110-043000-2"],
+                ".spotify_cache.stale-20261110-043000-3",
+            ),
+        ],
+    )
+    def test_earlier_set_aside_login_is_never_overwritten(
+        self, tmp_path, monkeypatch, capsys, earlier, expected_name
+    ):
+        """Each refused login gets its own dated name, and one line says where it went."""
+
+        class FixedClock:
+            """Clock that always shows the same moment."""
+
+            @staticmethod
+            def now():
+                """Tells the time.
+
+                Returns:
+                    Half past four on the tenth of November 2026.
+                """
+                return datetime(2026, 11, 10, 4, 30, 0)
+
+        monkeypatch.setattr("song_automations.clients.spotify.datetime", FixedClock)
+        client = self._client(tmp_path, monkeypatch)
+        for name in earlier:
+            (tmp_path / name).write_text(f"kept {name}")
+        client._client.search.side_effect = [
+            SpotifyOauthError("error: invalid_grant", error="invalid_grant"),
+            {"tracks": {"items": []}},
+        ]
+        client.search_raw("q")
+        assert (tmp_path / expected_name).read_text() == "old login"
+        assert (tmp_path / expected_name).stat().st_mode & 0o777 == 0o600
+        assert all((tmp_path / name).read_text() == f"kept {name}" for name in earlier)
+        printed = capsys.readouterr().out
+        assert printed.count("\n") == 1
+        assert "The old login was moved to" in printed
+        assert str(tmp_path / expected_name) in printed
 
     @pytest.mark.parametrize("code", ["invalid_client", "invalid_grant"])
     def test_login_refused_twice_stops_instead_of_looping(self, tmp_path, monkeypatch, code):
@@ -464,7 +512,7 @@ class TestSpotifyLogin:
         with pytest.raises(ReauthRequiredError):
             client.search_raw("q")
         assert client._cache_path.read_text() == "old login"
-        assert not (tmp_path / ".spotify_cache.stale").exists()
+        assert not list(tmp_path.glob(".spotify_cache.stale*"))
         assert client._auth.get_access_token.call_count == 0
 
     @pytest.mark.parametrize("saved", [True, False])
@@ -474,7 +522,7 @@ class TestSpotifyLogin:
         client.login()
         client._auth.get_access_token.assert_called_once_with(as_dict=False, check_cache=False)
         assert client._cache_path.stat().st_mode & 0o777 == 0o600
-        assert not (tmp_path / ".spotify_cache.stale").exists()
+        assert not list(tmp_path.glob(".spotify_cache.stale*"))
 
     @pytest.mark.parametrize(
         ("raised", "expected"),
@@ -714,7 +762,7 @@ class TestSpotifyUnattended:
         with pytest.raises(UnattendedLoginError):
             client.search_raw("q")
         assert client._cache_path.read_text() == "old login"
-        assert not (tmp_path / ".spotify_cache.stale").exists()
+        assert not list(tmp_path.glob(".spotify_cache.stale*"))
         assert client._auth.get_access_token.call_count == 0
         assert client._client.search.call_count == 1
 

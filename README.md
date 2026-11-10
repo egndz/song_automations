@@ -49,7 +49,7 @@ Opens the approval page of each platform in your browser, waits for you to appro
 
 The tool waits 10 minutes for the approval and then stops with a message instead of hanging. Set `LOGIN_WAIT_SECONDS` to change that. The saved logins live in `~/.song_automations/` and only your user can read them.
 
-If Spotify refuses the saved login in the middle of a sync (for example because it was made for another Spotify app, or the approval was withdrawn), the file is renamed to `.spotify_cache.stale`, the approval page opens and the run carries on once you approve it.
+If Spotify refuses the saved login in the middle of a sync (for example because it was made for another Spotify app, or the approval was withdrawn), the file is renamed to `.spotify_cache.stale-` followed by the date and time, a yellow line says where it went, the approval page opens and the run carries on once you approve it.
 
 ### Sync to Spotify
 

@@ -4,9 +4,12 @@ import logging
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import spotipy
+from rich.console import Console
+from rich.markup import escape
 from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import (
     SpotifyOAuth,
@@ -27,10 +30,12 @@ from song_automations.errors import (
 )
 
 logger = logging.getLogger(__name__)
+console = Console()
 
 PLATFORM = "Spotify"
 STALE_LOGIN_ERRORS = frozenset({"invalid_client", "invalid_grant"})
 STALE_SUFFIX = ".stale"
+STALE_STAMP = "%Y%m%d-%H%M%S"
 PLAYLIST_CACHE_TTL = 300
 MAX_WAIT_SECONDS = 60
 MAX_ATTEMPTS = 5
@@ -302,12 +307,20 @@ class SpotifyClient:
     def _set_login_aside(self) -> Path | None:
         """Renames the saved login so that it is no longer used but not lost.
 
+        The new name carries the time, and a number when that name is taken,
+        so a login set aside earlier is never overwritten.
+
         Returns:
             Where the saved login went, or None when there was none.
         """
         if not self._cache_path.exists():
             return None
-        stale = self._cache_path.with_name(self._cache_path.name + STALE_SUFFIX)
+        name = f"{self._cache_path.name}{STALE_SUFFIX}-{datetime.now().strftime(STALE_STAMP)}"
+        stale = self._cache_path.with_name(name)
+        repeat = 1
+        while stale.exists():
+            repeat += 1
+            stale = self._cache_path.with_name(f"{name}-{repeat}")
         self._cache_path.replace(stale)
         stale.chmod(0o600)
         return stale
@@ -337,6 +350,13 @@ class SpotifyClient:
             error.error,
             stale,
         )
+        if stale is not None:
+            console.print(
+                f"[yellow]Spotify refused the saved login. The old login was moved to "
+                f"{escape(str(stale))} and a new one is being asked for.[/yellow]",
+                soft_wrap=True,
+                highlight=False,
+            )
         self.login()
 
     def _call(self, method, *args, **kwargs):
