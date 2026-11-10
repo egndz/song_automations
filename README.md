@@ -188,20 +188,20 @@ Next to it, `audit-shared-ids.csv` lists every platform track that more than one
 
 Matching works release by release and only accepts a candidate that passes every check:
 
-- **Artist**: one of the credited artists (or a Discogs name variation or alias) must match the candidate artist.
+- **Artist**: one of the credited artists, under any name variation the release uses, must match the candidate artist. The other name variations and aliases Discogs lists for the artist are tried only when nothing matched under the credited names.
 - **Title**: the base title must match, ignoring punctuation, accents and catalog prefixes such as `A1`.
-- **Unwanted uploads**: covers, karaoke, DJ sets, live recordings, previews and reaction videos are rejected unless the Discogs title says the same.
+- **Unwanted uploads**: covers, karaoke, tributes, mashups, bootlegs, acoustic and instrumental versions, previews, reaction videos, live recordings and radio or TV sessions (KEXP, Tiny Desk, Maida Vale and the like) are rejected unless the Discogs title carries the same word. The word has to be there as a whole word, so a track called "Alive" does not excuse a live take, and words in the artist's own name never count against an upload. DJ sets, mixtapes, radio shows and uploads merely marked "live" are rejected too, except when their length is within 5 seconds of the Discogs length, because then the upload is the record itself on a channel with such a word in its title.
 - **Version**: the exact mix is preferred, then the original mix, then another mix of the same song. A mix with the wrong length drops to the lowest tier.
 - **Length**: an exact-version match must be within 20 seconds of the Discogs duration when both are known.
-- **No duplicates**: each streaming track is used once per playlist, and two Discogs tracks never share one match.
+- **No duplicates**: each streaming track is used once per playlist, and two tracks of one release never share one match. The same song on two of your records does share its streaming track.
 
 On Spotify the tool looks for the release as an album first, then runs one search per remaining track. On SoundCloud it also looks at sets and at the label's or artist's own account.
 
 ### SoundCloud: the same recording, proven by its code
 
-Every released recording has an ISRC, a code that names that one recording. A cover, a live take or a tribute band's version has a different code or none. For each Discogs track the tool looks the code up in the public Deezer catalogue (free, no account, and the entry has to pass the checks above as the exact version). A SoundCloud track carrying the same code is accepted whatever its account is called, so the official upload on "YusufCatStevens" or "SadeOfficial" counts for Cat Stevens and Sade.
+Every released recording has an ISRC, a code that names that one recording. A cover, a live take or a tribute band's version has a different code or none. For each Discogs track the tool looks the code up in the public Deezer catalogue (free, no account, and the entry has to pass the checks above as the exact version). A SoundCloud track carrying the same code is accepted whatever its account is called, so the official upload on "YusufCatStevens" or "SadeOfficial" counts for Cat Stevens and Sade. The recording code Spotify lists for an exact match of the same track is used to verify the SoundCloud track in the same way, which covers tracks Deezer lacks. An upload that carries the code but is more than 20 seconds shorter or longer than the recording is refused, because labels post clips under the code of the full track.
 
-Without a matching code the older rules apply. Uploads by the artist, the label or a remixer credited on Discogs are trusted (the account name has to match exactly, so tribute accounts such as "FOOT Fighters" do not pass). Anyone else's upload, such as a vinyl rip, is only accepted for tracks that neither Deezer nor Spotify carries and only when its length is within 20 seconds of the Discogs length. In a blind check, fan uploads of released music turned out to be covers, tributes or other cuts about as often as the real record, while fan uploads of rare records were mostly genuine rips.
+Without a matching code the older rules apply. Uploads by the artist, the label or a remixer credited on Discogs are trusted (the account name has to match exactly, so tribute accounts such as "FOOT Fighters" do not pass, and an account that only carries one of the artist's aliases is not trusted either, since short aliases are common account names). Anyone else's upload, such as a vinyl rip, is only accepted for tracks that neither Deezer nor Spotify carries and only when its length is within 20 seconds of the Discogs length. In a blind check, fan uploads of released music turned out to be covers, tributes or other cuts about as often as the real record, while fan uploads of rare records were mostly genuine rips.
 
 If Deezer cannot be reached the sync still runs, it just recognises fewer official uploads that day.
 
@@ -209,7 +209,7 @@ If Deezer cannot be reached the sync still runs, it just recognises fewer offici
 
 Labels deliver most released music to SoundCloud as tracks that only Go+ subscribers can play in full; everyone else hears a 30 second clip, and some are blocked outright. On a sample of this collection, three out of four tracks that Spotify carries exist on SoundCloud only in that form.
 
-SoundCloud tells the tool, per track, what the logged-in account may do with it. By default only tracks the account can play in full are added, so a Go+ account gets the label releases and a free account does not. The sync reports how many missing tracks exist only as such gated uploads, and `report matches` lists them with the status `gated`. Set `SOUNDCLOUD_GATED_TRACKS=true` to add them anyway. Switching it off again leaves the tracks that were added in place.
+SoundCloud tells the tool, per track, what the logged-in account may do with it. By default only tracks the account can play in full are added, so a Go+ account gets the label releases and a free account does not. The sync reports how many missing tracks exist only as such gated uploads, and `report matches` lists them with the status `gated`. Set `SOUNDCLOUD_GATED_TRACKS=true` to add them anyway; an upload the account can play in full is still preferred over a gated one of the same version. Switching it off again leaves the tracks that were added in place.
 
 A gated track shows a 30 second clip instead of its length. When Discogs lists a length that therefore cannot be checked, the match is kept but marked as another version in the report, unless its ISRC proves it.
 
