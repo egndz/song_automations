@@ -20,6 +20,9 @@ VERSION_RATIO = 85
 EXACT_LENGTH_BELOW = 5
 DURATION_TOLERANCE_MS = 20_000
 PREVIEW_MAX_MS = 60_000
+PREVIEW_CLIP_MS = 30_000
+ISRC_KIND = "isrc"
+PLAYABLE = "playable"
 PREVIEW_SOURCE_FRACTION = 0.5
 LONG_MIX_MIN_MS = 1_500_000
 LONG_MIX_SOURCE_FACTOR = 2.5
@@ -111,6 +114,9 @@ class SourceTrack:
         fan_uploads: Whether uploads by strangers may match. Off when Spotify
             already carries the track, since fan uploads of released music
             turned out to be covers or tributes about as often as the record.
+        isrcs: Recording codes of this exact version, taken from a catalogue
+            that lists it. A candidate carrying one of them is the same
+            recording, whoever uploaded it.
     """
 
     artists: tuple[str, ...]
@@ -120,6 +126,7 @@ class SourceTrack:
     labels: tuple[str, ...] = ()
     remixers: tuple[str, ...] = ()
     fan_uploads: bool = True
+    isrcs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -149,6 +156,8 @@ class Candidate:
         album: Album name if the platform has one.
         uploader: Uploading account, SoundCloud only.
         plays: Play count used only as the last tiebreak.
+        isrc: Recording code the platform lists, empty when it lists none.
+        access: SoundCloud access level: playable, preview or blocked.
     """
 
     id: str
@@ -158,6 +167,8 @@ class Candidate:
     album: str = ""
     uploader: str = ""
     plays: int = 0
+    isrc: str = ""
+    access: str = PLAYABLE
 
 
 @dataclass(frozen=True)
@@ -207,6 +218,18 @@ class Decision:
     match: Match | None = None
     alternatives: list[Match] = field(default_factory=list)
     rejections: list[Rejection] = field(default_factory=list)
+
+
+def normalize_isrc(text: str | None) -> str:
+    """Brings a recording code to one spelling.
+
+    Args:
+        text: Code as a platform writes it, with or without dashes.
+
+    Returns:
+        Upper case code without separators, empty when there is none.
+    """
+    return re.sub(r"[^A-Z0-9]", "", (text or "").upper())
 
 
 def clean(text: str) -> str:
@@ -473,6 +496,8 @@ def _confidence(tier: Tier, reading: Reading, delta: int | None, same_release: b
     Returns:
         Value between 0 and 1.
     """
+    if reading.kind == ISRC_KIND:
+        return 1.0
     base = {Tier.EXACT: 0.85, Tier.ORIGINAL: 0.7, Tier.OTHER_MIX: 0.55}[tier]
     if reading.kind in {"label", "loose"}:
         base -= 0.1
@@ -529,6 +554,35 @@ def _fan_upload_unverified(source: SourceTrack, candidate: Candidate) -> bool:
     return True
 
 
+def _same_recording(source: SourceTrack, candidate: Candidate) -> Match:
+    """Accepts a candidate that carries a recording code of the source.
+
+    The code names one recording, so no reading of the title or the account
+    is needed, and a cover or a live take never shares it.
+
+    Args:
+        source: Source track.
+        candidate: Candidate with a matching code.
+
+    Returns:
+        An exact match.
+    """
+    known = candidate.readings[0] if candidate.readings else Reading((), candidate.raw_title)
+    reading = Reading(known.artists, known.title, ISRC_KIND)
+    delta = (
+        abs(source.duration_ms - candidate.duration_ms)
+        if source.duration_ms and candidate.duration_ms
+        else None
+    )
+    return Match(
+        candidate=candidate,
+        tier=Tier.EXACT,
+        reading=reading,
+        duration_delta_ms=delta,
+        confidence=_confidence(Tier.EXACT, reading, delta, False),
+    )
+
+
 def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
     """Applies the gates to one candidate.
 
@@ -540,6 +594,8 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         A Match when every gate passes, otherwise a Rejection naming the first
         failed gate.
     """
+    if candidate.isrc and candidate.isrc in source.isrcs:
+        return _same_recording(source, candidate)
     marker = _rejected_marker(source, candidate)
     if marker:
         return Rejection(candidate, f"marker:{marker}")
@@ -607,6 +663,8 @@ def _rank(match: Match) -> tuple:
     delta = match.duration_delta_ms if match.duration_delta_ms is not None else 10**9
     return (
         -int(match.tier),
+        match.reading.kind != ISRC_KIND,
+        match.candidate.access != PLAYABLE,
         not match.on_same_release,
         match.reading.kind in {"label", "loose"},
         delta // 5000,
@@ -689,6 +747,7 @@ def spotify_candidate(item: dict, album_name: str | None = None) -> Candidate:
         readings=(Reading(artists, name),),
         duration_ms=item.get("duration_ms"),
         album=album or "",
+        isrc=normalize_isrc((item.get("external_ids") or {}).get("isrc")),
     )
 
 
@@ -740,12 +799,18 @@ def soundcloud_candidate(item: dict) -> Candidate:
     """
     uploader = (item.get("user") or {}).get("username") or ""
     title = item.get("title") or ""
+    access = item.get("access") or PLAYABLE
+    duration = item.get("duration")
+    if access == "preview" and duration == PREVIEW_CLIP_MS:
+        duration = None
     return Candidate(
         id=str(item.get("id")),
         raw_title=title,
         readings=soundcloud_readings(title, uploader, item.get("metadata_artist") or ""),
-        duration_ms=item.get("duration"),
+        duration_ms=duration,
         album=item.get("release") or "",
         uploader=uploader,
         plays=item.get("playback_count") or 0,
+        isrc=normalize_isrc(item.get("isrc")),
+        access=access,
     )

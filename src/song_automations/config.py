@@ -23,6 +23,7 @@ class Settings(BaseSettings):
         data_dir: Directory for storing SQLite database and cache files.
         want_playlist_name: Playlist whose tracks go on the Discogs wantlist.
         playlist_prefix: Prefix for created playlists.
+        soundcloud_catalogue: Whether subscriber-only SoundCloud tracks may match.
         spotify_search_budget: Spotify searches one run may make.
         min_confidence: Minimum confidence threshold for track matching.
         high_confidence: Threshold for high confidence matches (auto-add).
@@ -82,6 +83,10 @@ class Settings(BaseSettings):
         description="Prefix for created playlists",
     )
 
+    soundcloud_catalogue: Literal["auto", "always", "never"] = Field(
+        default="auto",
+        description="Whether SoundCloud matches may be tracks only Go+ subscribers play in full; auto asks the account",
+    )
     spotify_search_budget: int = Field(
         default=400,
         ge=1,

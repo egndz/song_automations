@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from song_automations import __version__
+from song_automations.clients.deezer import DeezerClient
 from song_automations.clients.discogs import DiscogsClient
 from song_automations.clients.http import RateLimitError
 from song_automations.clients.soundcloud import SoundCloudClient
@@ -19,6 +20,7 @@ from song_automations.errors import (
     SearchBudgetExhaustedError,
 )
 from song_automations.logging import setup_logging
+from song_automations.matching.isrc import IsrcFinder
 from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
 from song_automations.state.tracker import StateTracker
@@ -92,7 +94,8 @@ def _run_sync(
         count = state_tracker.clear_matched_tracks(platform, preserve_reviewed=True)
         console.print(f"[yellow]Cleared {count} unreviewed matches for {platform} (reviewed tracks preserved)[/yellow]\n")
 
-    engine = SyncEngine(settings, discogs_client, state_tracker, console)
+    finder = IsrcFinder(DeezerClient(), state_tracker)
+    engine = SyncEngine(settings, discogs_client, state_tracker, console, isrc_finder=finder)
 
     if platform == "spotify":
         client = SpotifyClient(settings)
@@ -105,12 +108,32 @@ def _run_sync(
         )
     else:
         client = SoundCloudClient(settings)
+        _choose_catalogue(settings, client)
         _run_want(settings, client, platform, discogs_client, state_tracker, dry_run)
         return engine.sync_to_soundcloud(
             playlist_client=client,
             include_wantlist=not exclude_wantlist,
             folder_names=folder_names,
             dry_run=dry_run,
+        )
+
+
+def _choose_catalogue(settings: Settings, client: SoundCloudClient) -> None:
+    """Decides whether SoundCloud matches may be subscriber-only tracks.
+
+    Args:
+        settings: Application settings.
+        client: SoundCloud client.
+    """
+    mode = settings.soundcloud_catalogue
+    enabled = client.has_full_catalogue() if mode == "auto" else mode == "always"
+    client.include_catalogue(enabled)
+    if enabled:
+        console.print("[dim]SoundCloud: official releases that need Go+ are included.[/dim]")
+    else:
+        console.print(
+            "[dim]SoundCloud: official releases that need Go+ are left out. "
+            "Set SOUNDCLOUD_CATALOGUE=always to include them.[/dim]"
         )
 
 

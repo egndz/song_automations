@@ -216,3 +216,72 @@ class TestParseTrack:
         track = client._parse_track(item)
         assert track.playback_count == 0
         assert track.likes_count == 0
+
+
+class TestCatalogueAccess:
+    """Tests for choosing between freely playable tracks and the whole catalogue."""
+
+    @pytest.fixture
+    def client(self, settings, monkeypatch):
+        """Create a client whose requests are recorded instead of sent.
+
+        Args:
+            settings: Test settings.
+            monkeypatch: Pytest patcher.
+
+        Returns:
+            The client, with the requests in client.sent and the next body in client.body.
+        """
+        client = SoundCloudClient(settings)
+        client.sent = []
+        client.body = []
+
+        def fake_get(url, params=None):
+            """Records one request.
+
+            Args:
+                url: Target URL.
+                params: Query parameters.
+
+            Returns:
+                The prepared body.
+            """
+            client.sent.append((url, params))
+            return client.body
+
+        monkeypatch.setattr(client, "_get_json", fake_get)
+        return client
+
+    @pytest.mark.parametrize(
+        ("subscriptions", "expected"),
+        [
+            ([{"product": {"id": "consumer-high-tier", "name": "SoundCloud Go+"}}], True),
+            ([{"product": {"id": "go-plus", "name": "Go+"}}], True),
+            ([{"product": {"id": "dj", "name": "SoundCloud DJ"}}], True),
+            ([{"product": {"id": "free", "name": "Free"}}], False),
+            ([{"product": {"id": "creator-pro-unlimited", "name": "Next Pro"}}], False),
+            ([{"product": {"id": "consumer-mid-tier", "name": "SoundCloud Go"}}], False),
+            ([{"product": None}], False),
+            ([], False),
+            (None, False),
+        ],
+    )
+    def test_only_a_full_catalogue_plan_counts(self, client, subscriptions, expected):
+        """Go+ and DJ play label releases in full; Free, Go and creator plans do not."""
+        client.body = {"id": 1, "subscriptions": subscriptions}
+        assert client.has_full_catalogue() is expected
+
+    @pytest.mark.parametrize(
+        ("enabled", "access"),
+        [(False, "playable"), (True, "playable,preview,blocked")],
+    )
+    def test_searches_ask_for_the_chosen_access(self, client, enabled, access):
+        """Track, set and account searches all follow the setting."""
+        client.include_catalogue(enabled)
+        client.search_raw("Bicep Glue")
+        client.search_playlists_raw("Bicep Isles")
+        client.body = [{"username": "Bicep", "track_count": 3, "followers_count": 9, "urn": "soundcloud:users:1"}]
+        client.account_tracks_raw("Bicep")
+        asked = [params["access"] for _, params in client.sent if params and "access" in params]
+        assert asked == [access] * 3
+        assert client.access_scope == access

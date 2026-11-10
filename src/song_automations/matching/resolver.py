@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Protocol
 
 from song_automations.matching.matcher import (
+    PLAYABLE,
     Candidate,
     Decision,
     Match,
@@ -167,9 +168,14 @@ class SoundCloudSearcher:
         self._client = client
         self._cache = cache
         self._accounts: dict[str, list[Candidate]] = {}
+        scope = getattr(client, "access_scope", PLAYABLE)
+        self._scope = "" if scope == PLAYABLE else f"@{scope}"
 
     def _cached(self, key: str, fetch: Callable[[], list | dict]) -> list | dict:
         """Returns a cached response or fetches and stores it.
+
+        Searches that include the licensed catalogue are stored apart from
+        searches that do not, so changing the setting never reuses the other.
 
         Args:
             key: Cache key.
@@ -178,6 +184,7 @@ class SoundCloudSearcher:
         Returns:
             Raw response.
         """
+        key = f"{key}{self._scope}"
         stored = self._cache.get_search_cache(self.platform, key)
         if stored is not None:
             return stored

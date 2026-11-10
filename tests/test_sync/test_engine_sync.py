@@ -365,3 +365,48 @@ def test_wantlist_constant_is_protected_from_cleanup(state):
     spotify = FakeSpotify({"Discogs - Electro": [], "W": ["kept"]}, {QUERY: [item("right", "Glue")]})
     run(state, discogs, spotify)
     assert spotify.playlists["W"] == ["kept"]
+
+
+class FakeFinder:
+    """Recording code lookup stand-in.
+
+    Args:
+        codes: Codes every track gets.
+    """
+
+    def __init__(self, codes=()) -> None:
+        self.codes = frozenset(codes)
+        self.asked = []
+
+    def find(self, source, artist):
+        """Looks up a track.
+
+        Args:
+            source: Source track.
+            artist: Artist searched for.
+
+        Returns:
+            The codes.
+        """
+        self.asked.append((artist, source.title))
+        return self.codes
+
+
+@pytest.mark.parametrize(
+    ("destination", "codes", "on_spotify", "isrcs", "fan_uploads", "lookups"),
+    [
+        ("soundcloud", {"GBCFB1700231"}, False, {"GBCFB1700231"}, False, 1),
+        ("soundcloud", set(), False, set(), True, 1),
+        ("soundcloud", set(), True, set(), False, 1),
+        ("spotify", {"GBCFB1700231"}, False, set(), True, 0),
+    ],
+)
+def test_released_tracks_refuse_fan_uploads(state, destination, codes, on_spotify, isrcs, fan_uploads, lookups):
+    """A track that a catalogue or Spotify carries takes only verified uploads, and only SoundCloud looks codes up."""
+    track = discogs_track()
+    if on_spotify:
+        state.save_matched_track(1, "A1", "Bicep", "Glue", "spotify", "sp1", 0.9, match_tier="exact")
+    finder = FakeFinder(codes)
+    engine = SyncEngine(Settings(_env_file=None), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
+    source = engine._to_source(track, Release(1, "Release", "Bicep", 2017, 1, "Folder"), destination)
+    assert (source.isrcs, source.fan_uploads, len(finder.asked)) == (frozenset(isrcs), fan_uploads, lookups)

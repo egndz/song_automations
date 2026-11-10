@@ -3,7 +3,7 @@
 import re
 import traceback
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Protocol
@@ -13,6 +13,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from song_automations.clients.discogs import DiscogsClient, Folder, Release, Track
 from song_automations.config import Settings
+from song_automations.matching.isrc import IsrcFinder
 from song_automations.matching.matcher import Match, SourceTrack, Tier
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
@@ -132,6 +133,7 @@ class SyncEngine:
         discogs_client: Discogs API client.
         state_tracker: State tracker for caching.
         console: Rich console for output.
+        isrc_finder: Looks up recording codes for SoundCloud matching, optional.
     """
 
     def __init__(
@@ -140,11 +142,13 @@ class SyncEngine:
         discogs_client: DiscogsClient,
         state_tracker: StateTracker,
         console: Console | None = None,
+        isrc_finder: IsrcFinder | None = None,
     ) -> None:
         self._settings = settings
         self._discogs = discogs_client
         self._state = state_tracker
         self._console = console or Console()
+        self._isrc_finder = isrc_finder
 
     def sync_to_spotify(
         self,
@@ -512,7 +516,7 @@ class SyncEngine:
             ]
             matches = resolve_release(
                 searcher,
-                [self._to_source(track, release) for track in pending],
+                [self._to_source(track, release, destination) for track in pending],
                 [_first_artist(track) for track in pending],
                 pending[0].release_artist,
                 release.title,
@@ -561,28 +565,35 @@ class SyncEngine:
             names += self._discogs.get_artist_names(artist_id)
         return tuple(dict.fromkeys(names))
 
-    def _to_source(self, track: Track, release: Release) -> SourceTrack:
+    def _to_source(self, track: Track, release: Release, destination: Destination) -> SourceTrack:
         """Prepares a Discogs track for matching.
 
-        Fan uploads are allowed only for tracks Spotify does not carry, so a
-        Spotify sync before a SoundCloud sync keeps covers out.
+        On SoundCloud the recording codes of the track are looked up first, so
+        the official upload is recognised whatever its account is called. Fan
+        uploads are allowed only for tracks no catalogue carries, which keeps
+        covers out.
 
         Args:
             track: Discogs track.
             release: Parent release.
+            destination: Target platform.
 
         Returns:
             The source track.
         """
-        return SourceTrack(
+        source = SourceTrack(
             artists=track.artist_names or (track.artist,),
             title=track.title,
             duration_ms=_duration_ms(track.duration),
             release_title=release.title,
             labels=track.labels,
             remixers=track.remixers,
-            fan_uploads=not self._state.has_exact_spotify_match(release.id, track.position),
         )
+        isrcs: frozenset[str] = frozenset()
+        if destination == "soundcloud" and self._isrc_finder is not None:
+            isrcs = self._isrc_finder.find(source, _first_artist(track))
+        released = bool(isrcs) or self._state.has_exact_spotify_match(release.id, track.position)
+        return replace(source, isrcs=isrcs, fan_uploads=not released)
 
     def _save_decision(
         self,

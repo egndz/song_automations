@@ -257,3 +257,32 @@ def test_soundcloud_reads_an_account_once_per_run():
 def test_search_title(title, expected):
     """Search boxes get the bare title."""
     assert search_title(title) == expected
+
+
+class ScopedSoundCloud(FakeSoundCloud):
+    """SoundCloud stand-in that says which access levels it searches.
+
+    Args:
+        scope: Access levels.
+    """
+
+    def __init__(self, scope: str) -> None:
+        super().__init__()
+        self.access_scope = scope
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "shared"),
+    [
+        ("playable", "playable", True),
+        ("playable,preview,blocked", "playable,preview,blocked", True),
+        ("playable", "playable,preview,blocked", False),
+    ],
+)
+def test_catalogue_searches_are_stored_apart(first, second, shared):
+    """Switching the catalogue setting never reuses results fetched under the other one."""
+    cache = MemoryCache()
+    SoundCloudSearcher(ScopedSoundCloud(first), cache).search("Bicep Glue")
+    before = set(cache.data)
+    SoundCloudSearcher(ScopedSoundCloud(second), cache).search("Bicep Glue")
+    assert (set(cache.data) == before) is shared

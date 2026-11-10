@@ -277,3 +277,74 @@ def test_decide_is_independent_of_candidate_order():
 def test_reading_is_hashable():
     """Readings can be deduplicated."""
     assert len({Reading(("a",), "b"), Reading(("a",), "b")}) == 1
+
+
+def catalogue_upload(title="Katmandu (Remastered 2020)", uploader="YusufCatStevens", isrc="GBUM71905959", access="blocked", ms=203_000, id="x") -> Candidate:
+    """Builds a SoundCloud track the way a label delivers it.
+
+    Args:
+        title: Upload title.
+        uploader: Account name.
+        isrc: Recording code.
+        access: Access level.
+        ms: Duration.
+        id: Track id.
+
+    Returns:
+        The candidate.
+    """
+    return soundcloud_candidate(
+        {"id": id, "title": title, "user": {"username": uploader}, "duration": ms, "isrc": isrc, "access": access}
+    )
+
+
+@pytest.mark.parametrize(
+    ("known", "candidate", "accepted"),
+    [
+        ({"GBUM71905959"}, catalogue_upload(), True),
+        ({"GBUM71905959"}, catalogue_upload(isrc="gb-um7-19-05959"), True),
+        ({"GBUM71905959"}, catalogue_upload(title="Katmandu (Live at the BBC)"), True),
+        ({"GBUM71905959"}, catalogue_upload(isrc=""), False),
+        ({"GBUM71905959"}, catalogue_upload(title="Katmandu (Made Popular By Cat Stevens)", uploader="Party Tyme Karaoke", isrc="USSYS1103776"), False),
+        (set(), catalogue_upload(), False),
+    ],
+)
+def test_same_recording_code_is_trusted_whatever_the_account(known, candidate, accepted):
+    """An upload carrying the code of the record is the record; anything else still needs a trusted account."""
+    source = SourceTrack(("Cat Stevens",), "Katmandu", fan_uploads=False, isrcs=frozenset(known))
+    outcome = evaluate(source, candidate)
+    assert isinstance(outcome, Match) is accepted
+    if accepted:
+        assert (outcome.tier, outcome.reading.kind, outcome.confidence) == (Tier.EXACT, "isrc", 1.0)
+
+
+@pytest.mark.parametrize(
+    ("candidates", "winner"),
+    [
+        ([catalogue_upload(title="Glue", uploader="Bicep", isrc="", access="playable", id="own"), catalogue_upload(title="Glue", uploader="BICEP MUSIC", isrc="GBCFB1700231", access="preview", id="code")], "code"),
+        ([catalogue_upload(title="Glue", uploader="Bicep", isrc="", access="preview", id="gated"), catalogue_upload(title="Glue", uploader="Bicep", isrc="", access="playable", id="free")], "free"),
+        ([catalogue_upload(title="Glue", uploader="Bicep", isrc="GBCFB1700231", access="blocked", id="gated"), catalogue_upload(title="Glue", uploader="Bicep", isrc="GBCFB1700231", access="playable", id="free")], "free"),
+    ],
+)
+def test_verified_recording_wins_then_the_freely_playable_one(candidates, winner):
+    """The upload with the recording code goes first, and between equals the one anybody can play."""
+    source = SourceTrack(("Bicep",), "Glue", fan_uploads=False, isrcs=frozenset({"GBCFB1700231"}))
+    assert decide(source, candidates).match.candidate.id == winner
+
+
+@pytest.mark.parametrize(
+    ("access", "ms", "expected"),
+    [("preview", 30_000, None), ("preview", 250_000, 250_000), ("playable", 30_000, 30_000), ("blocked", 30_000, 30_000)],
+)
+def test_preview_clip_length_is_not_the_track_length(access, ms, expected):
+    """A subscriber-only track that reports its 30 second clip has an unknown length, not a short one."""
+    assert catalogue_upload(access=access, ms=ms).duration_ms == expected
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [({"external_ids": {"isrc": "gbcfb1700231"}}, "GBCFB1700231"), ({"external_ids": {}}, ""), ({}, "")],
+)
+def test_spotify_candidate_reads_the_recording_code(item, expected):
+    """Search results carry the code, album listings do not."""
+    assert spotify_candidate({"id": "1", "name": "Glue", "artists": [], **item}).isrc == expected
