@@ -25,7 +25,6 @@ class Settings(BaseSettings):
         playlist_prefix: Prefix for created playlists.
         soundcloud_gated_tracks: Whether SoundCloud tracks the account cannot play in full may match.
         spotify_search_budget: Spotify searches one run may make.
-        min_confidence: Minimum confidence threshold for track matching.
         high_confidence: Threshold for high confidence matches (auto-add).
         log_level: Logging level for file output.
     """
@@ -92,12 +91,6 @@ class Settings(BaseSettings):
         ge=1,
         description="Spotify searches one run may make; development mode apps are blocked for a day after about 900",
     )
-    min_confidence: float = Field(
-        default=0.30,
-        ge=0.0,
-        le=1.0,
-        description="Minimum confidence threshold (skip if below)",
-    )
     high_confidence: float = Field(
         default=0.50,
         ge=0.0,
@@ -107,62 +100,6 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
         default="INFO",
         description="Logging level",
-    )
-
-    max_workers: int = Field(
-        default=4,
-        ge=1,
-        le=10,
-        description="Maximum concurrent workers for release processing",
-    )
-
-    artist_weight: float = Field(
-        default=0.45,
-        ge=0.0,
-        le=1.0,
-        description="Weight for artist score in matching",
-    )
-    title_weight: float = Field(
-        default=0.35,
-        ge=0.0,
-        le=1.0,
-        description="Weight for title score in matching",
-    )
-    verified_weight: float = Field(
-        default=0.10,
-        ge=0.0,
-        le=1.0,
-        description="Weight for verified artist bonus",
-    )
-    popularity_weight: float = Field(
-        default=0.10,
-        ge=0.0,
-        le=1.0,
-        description="Weight for popularity score",
-    )
-    version_match_bonus: float = Field(
-        default=0.10,
-        ge=0.0,
-        le=0.2,
-        description="Bonus for matching remix/version info",
-    )
-    version_penalty_weight: float = Field(
-        default=0.15,
-        ge=0.0,
-        le=0.3,
-        description="Penalty weight for version mismatch (source has remix, candidate is original)",
-    )
-    label_bonus_weight: float = Field(
-        default=0.10,
-        ge=0.0,
-        le=0.2,
-        description="Bonus weight for label name appearing in candidate metadata",
-    )
-    max_search_queries: int = Field(
-        default=5,
-        ge=1,
-        le=10,
-        description="Maximum search queries per track for multi-query search",
     )
 
     @property

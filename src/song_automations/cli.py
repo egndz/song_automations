@@ -46,7 +46,7 @@ def _init_settings(min_confidence: float | None = None) -> Settings:
     """Initialize settings with optional overrides.
 
     Args:
-        min_confidence: Optional confidence threshold override.
+        min_confidence: Ignored, matching no longer uses a threshold.
 
     Returns:
         Configured Settings instance.
@@ -54,9 +54,6 @@ def _init_settings(min_confidence: float | None = None) -> Settings:
     settings = get_settings()
     settings.ensure_directories()
     setup_logging(level=settings.log_level, log_file=settings.log_path)
-
-    if min_confidence is not None:
-        settings.min_confidence = min_confidence
 
     return settings
 
