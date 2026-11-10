@@ -1,1 +1,1 @@
-"""Fuzzy matching system for track matching."""
+"""Gate-based track matching, candidate search and recording code lookup."""
