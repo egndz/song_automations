@@ -348,9 +348,11 @@ def test_sync_summary_ends_with_where_the_snapshot_is(flat, capsys, monkeypatch,
     assert ("song-automations restore" in output) is shown
 
 
-@pytest.mark.parametrize("message", ["Could not save a snapshot of the spotify playlist 'Mix [live]'."])
-def test_a_sync_stopped_by_a_failed_snapshot_exits_with_an_error(flat, capsys, monkeypatch, message):
-    """A snapshot that cannot be written ends the sync with the message and exit code 1."""
+@pytest.mark.parametrize(("unattended", "notified"), [(True, 1), (False, 0)])
+def test_a_sync_stopped_by_a_failed_snapshot_exits_with_an_error(wired, flat, capsys, monkeypatch, unattended, notified):
+    """A snapshot that cannot be written ends the sync with the message and exit code 1, and an unattended run tells the owner."""
+    message = "Could not save a snapshot of the spotify playlist 'Mix [live]'."
+    shown = []
 
     def run_sync(*args, **kwargs):
         """Stands in for a sync whose snapshot fails.
@@ -361,11 +363,14 @@ def test_a_sync_stopped_by_a_failed_snapshot_exits_with_an_error(flat, capsys, m
         """
         raise SnapshotError(message)
 
+    wired.settings.unattended = unattended
     monkeypatch.setattr(cli, "_run_sync", run_sync)
+    monkeypatch.setattr(cli, "notify_attention", shown.append)
     with pytest.raises(typer.Exit) as stopped:
-        cli._guarded_sync()
+        cli._guarded_sync(wired.settings)
     assert stopped.value.exit_code == 1
     assert message in flat(capsys.readouterr().out)
+    assert [type(error) for error in shown] == [SnapshotError] * notified
 
 
 @pytest.mark.parametrize(("through_sync_all", "same_run"), [(True, True), (False, False)])

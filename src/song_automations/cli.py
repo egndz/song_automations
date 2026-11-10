@@ -253,6 +253,7 @@ def _friendly_errors(settings: Settings | None = None) -> Iterator[None]:
         raise typer.Exit(2) from error
     except SnapshotError as error:
         console.print(f"[red]{escape(str(error))}[/red]")
+        _alert_owner(settings, error)
         raise typer.Exit(1) from error
 
 
