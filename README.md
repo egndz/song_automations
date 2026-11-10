@@ -10,6 +10,8 @@ Sync your Discogs collection folders to Spotify and SoundCloud playlists.
 - **Strict track matching**: Every match has to pass artist, title, version and length checks, so wrong songs stay out
 - **Full sync**: Additions AND removals - keeps playlists in sync with your collection
 - **Missing tracks report**: Generate CSV/JSON reports of tracks that couldn't be found
+- **Runs by itself**: One command schedules a daily sync that never opens a browser and tells you when it needs you
+- **Checks itself**: An audit compares every stored match with its evidence and with the other platform, without calling either
 
 ## Installation
 
@@ -43,7 +45,7 @@ song-automations login spotify
 song-automations login soundcloud
 ```
 
-Opens the approval page of each platform in your browser, waits for you to approve it and confirms with a green line. The saved login is replaced, so this is also the fix when a sync says a login has expired. A sync still opens the page by itself when no login is saved.
+Opens the approval page of each platform in your browser, waits for you to approve it and confirms with a green line. The saved login is replaced, so this is also the fix when a sync says a login has expired. A sync still opens the page by itself when no login is saved, unless it runs unattended (see "Run it every day").
 
 The tool waits 10 minutes for the approval and then stops with a message instead of hanging. Set `LOGIN_WAIT_SECONDS` to change that. The saved logins live in `~/.song_automations/` and only your user can read them.
 
@@ -76,6 +78,36 @@ song-automations sync soundcloud
 ```bash
 song-automations sync all
 ```
+
+### Run it every day
+
+```bash
+# Every day at 04:30, both platforms
+song-automations schedule install
+
+# Another time, or one platform
+song-automations schedule install --at 06:15 --platform spotify
+
+# Is it installed, when does it run, how did the last run end
+song-automations schedule status
+
+# Stop running by itself
+song-automations schedule uninstall
+```
+
+Run `schedule install` from the folder that holds your `.env` file, after logging in once with `song-automations login`. On macOS it writes `~/Library/LaunchAgents/com.songautomations.sync.plist` and loads it, and from then on macOS runs `song-automations --unattended sync all` at that time every day, with no terminal open. If the Mac is asleep at that time, the run happens when it wakes up. Installing again replaces the earlier schedule, which is how you change the time. Do that too after moving the project folder or rebuilding its Python environment, because the schedule remembers both paths.
+
+One run makes at most 400 Spotify searches, so a large collection fills in over several days. Each run carries on where the last one stopped.
+
+**Unattended mode.** With `--unattended` in front of a command (or `UNATTENDED=true` in `.env`) the tool never opens a browser and never waits for one. If a login is missing, has expired or is refused, that platform stops at once with a message that names `song-automations login`, the other platform still runs, and the exit code is 2. On macOS a notification titled "Song Automations" tells you the same, so you find out without reading a log. A rate limit is reported the same way, with the time it lasts until. Using up the day's searches is the normal end of a run: exit code 0 and no notification. `song-automations login` always opens the browser, whatever the setting.
+
+**The log.** Everything a scheduled run prints is added to `~/.song_automations/logs/scheduled-sync.log`, and each run starts with a line that carries its date and time. `schedule status` shows whether the schedule is installed and loaded, its time, the exit code of the last run and where the log is.
+
+**Uninstalling.** `schedule uninstall` unloads the schedule and deletes its file. Your logins, the database and the log stay where they are.
+
+If the project lives in Desktop, Documents or Downloads, macOS may ask once whether Python may access that folder. Allow it, otherwise the scheduled run cannot read its settings.
+
+On Linux and other systems nothing is installed. `schedule install` prints the crontab line that does the same, for you to add with `crontab -e`.
 
 ### Want playlist
 
@@ -114,6 +146,33 @@ song-automations report matches --destination spotify
 ```
 
 Writes a CSV with the Discogs track, the chosen streaming track, its tier (exact, original or other mix) and the tracks that were not found.
+
+### Check the matches
+
+```bash
+song-automations audit
+
+# Counts for one platform
+song-automations audit --platform soundcloud
+
+# Choose where the list of disagreements goes
+song-automations audit --output disagreements.csv
+```
+
+The audit reads the local database and nothing else. It calls no platform, uses no quota and changes nothing, so run it whenever you like.
+
+For each platform it shows how many tracks are matched, missing and gated, and sorts the matched ones by the evidence behind them, strongest first:
+
+- **Same recording code (ISRC)**: the track was accepted by its code, or the match on the other platform carries the same code.
+- **Exact version**: artist, title and version passed the checks.
+- **Original mix instead of the listed version** and **another mix of the same song**: substitutions, the right song in another version.
+- **Upload by an account that is not the artist's**: a SoundCloud upload whose account is neither the artist nor recognised as the label. The database does not keep the label or the remixers of a track, so this group holds label and remixer accounts as well as vinyl rips by strangers.
+
+Then it takes every track that is matched on both platforms and checks whether the two matches are one recording: the recording codes have to be the same when both platforms list one, and the lengths have to be within 5 seconds when both are stored. The result is one line, for example "412 of 530 matches found on both platforms are cross-verified", followed by how many disagree and how many could not be compared.
+
+Every disagreement goes to `~/.song_automations/reports/audit-disagreements.csv` with the artist, the title, both matched titles, both lengths, both codes and the check that failed. Different lengths are the ones worth a listen. Different codes with the same length are usually the same recording released twice.
+
+Next to it, `audit-shared-ids.csv` lists every platform track that more than one Discogs track on that platform is matched to. The same song on two of your records shares a track for a good reason, and the column `same_discogs_title` says `yes` for those. A `no` means two different titles ended up on one track.
 
 ## How it works
 
