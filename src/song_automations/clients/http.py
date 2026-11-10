@@ -12,6 +12,8 @@ from tenacity import (
 
 DEFAULT_TIMEOUT = httpx.Timeout(30.0, connect=10.0)
 
+DEFAULT_RETRY_AFTER_SECONDS = 60
+
 RETRYABLE_EXCEPTIONS = (
     httpx.ConnectError,
     httpx.ReadTimeout,
@@ -48,6 +50,23 @@ class RateLimitError(Exception):
         super().__init__(f"Rate limited. Retry after {retry_after} seconds.")
 
 
+def parse_retry_after(headers: object, default: int = DEFAULT_RETRY_AFTER_SECONDS) -> int:
+    """Reads how long a platform asks to wait, whatever shape the header has.
+
+    Args:
+        headers: Response headers, possibly missing or not a mapping.
+        default: Seconds to use when the header is absent or not a number.
+
+    Returns:
+        Seconds to wait, never negative.
+    """
+    try:
+        seconds = int(float((headers or {}).get("Retry-After")))
+    except (TypeError, ValueError, OverflowError, AttributeError):
+        return default
+    return max(seconds, 0)
+
+
 def handle_rate_limit(response: httpx.Response) -> None:
     """Check response for rate limiting and handle appropriately.
 
@@ -58,8 +77,7 @@ def handle_rate_limit(response: httpx.Response) -> None:
         RateLimitError: If response indicates rate limiting (429).
     """
     if response.status_code == 429:
-        retry_after = int(response.headers.get("Retry-After", "60"))
-        raise RateLimitError(retry_after)
+        raise RateLimitError(parse_retry_after(response.headers))
 
 
 def wait_for_rate_limit(retry_after: int) -> None:

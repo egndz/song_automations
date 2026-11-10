@@ -15,6 +15,7 @@ from spotipy.oauth2 import (
     start_local_http_server,
 )
 
+from song_automations.clients.http import parse_retry_after
 from song_automations.config import Settings
 from song_automations.errors import (
     LoginFailedError,
@@ -47,11 +48,7 @@ def retry_after_seconds(headers: dict | None) -> int:
     Returns:
         Seconds to wait, the default when the header is absent or not a number.
     """
-    try:
-        seconds = int(float((headers or {}).get("Retry-After")))
-    except (TypeError, ValueError, OverflowError, AttributeError):
-        return DEFAULT_RETRY_AFTER_SECONDS
-    return max(seconds, 0)
+    return parse_retry_after(headers, DEFAULT_RETRY_AFTER_SECONDS)
 
 
 @dataclass
