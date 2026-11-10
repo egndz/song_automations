@@ -24,6 +24,31 @@ def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolated_data_dir(
+    isolated_settings: None,
+    tmp_path_factory: pytest.TempPathFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Path:
+    """Points the data directory of every test at a temporary folder.
+
+    Settings built without an explicit data directory would otherwise use the
+    real one in the home folder, and a sync under test would save its playlist
+    snapshots there.
+
+    Args:
+        isolated_settings: Clears the exported settings first, so the variable set here stays.
+        tmp_path_factory: Pytest factory for temporary folders.
+        monkeypatch: Restores the environment afterwards.
+
+    Returns:
+        The folder standing in for the data directory.
+    """
+    folder = tmp_path_factory.mktemp("data_dir")
+    monkeypatch.setenv("DATA_DIR", str(folder))
+    return folder
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     """Create test settings with dummy values that never touch the real data directory.
