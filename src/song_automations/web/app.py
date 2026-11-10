@@ -519,7 +519,8 @@ def create_app(
             HTTPException: If the track is unknown, or Discogs or the platform
                 client cannot be used.
             RateLimitedError: When the platform asks for a long wait.
-            ReauthRequiredError: When the platform login has expired.
+            ReauthRequiredError: When the platform login has expired, also
+                when that shows while the platform client is being built.
             SearchBudgetExhaustedError: When the app has used its searches.
         """
         track = tracker.get_matched_track_by_id(track_id)
@@ -533,6 +534,8 @@ def create_app(
 
         try:
             searcher = get_searcher(track.destination)
+        except (RateLimitedError, ReauthRequiredError, SearchBudgetExhaustedError):
+            raise
         except Exception as error:
             raise HTTPException(status_code=500, detail=f"Failed to initialize client: {error}") from error
 

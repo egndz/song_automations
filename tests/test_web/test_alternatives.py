@@ -14,6 +14,7 @@ from song_automations.errors import (
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
+    UnattendedLoginError,
 )
 from song_automations.state.tracker import MatchedTrack, StateTracker
 from song_automations.web.app import MAX_SEARCHES, build_source, create_app
@@ -332,6 +333,39 @@ def test_platform_errors_are_reported_not_swallowed(
     assert "sync again" not in answer.json()["detail"]
     assert answer.headers.get("retry-after") == retry_after
     assert len(platform.queries) == 1
+
+
+@pytest.mark.parametrize(
+    ("destination", "error", "status", "code", "advice"),
+    [
+        ("spotify", ReauthRequiredError("Spotify"), 401, "reauth_required", "song-automations login spotify"),
+        ("soundcloud", UnattendedLoginError("SoundCloud"), 401, "reauth_required", "song-automations login soundcloud"),
+        ("soundcloud", LoginTimeoutError("SoundCloud", 600), 401, "reauth_required", "within 600 seconds"),
+        ("spotify", LoginFailedError("Spotify", "invalid_client"), 401, "reauth_required", "invalid_client"),
+        ("spotify", RateLimitedError("Spotify", 3600), 429, "rate_limited", "Try again after"),
+        ("spotify", SearchBudgetExhaustedError("Spotify", 400), 429, "search_budget_exhausted", "400"),
+        ("spotify", RuntimeError("no credentials"), 500, None, "Failed to initialize client: no credentials"),
+    ],
+)
+def test_errors_while_building_the_client_keep_their_meaning(tmp_path, destination, error, status, code, advice):
+    """A login or limit problem that shows while the client is built is reported as such, not as a crash."""
+
+    def build(settings):
+        """Stands in for a client that cannot be built.
+
+        Args:
+            settings: Application settings.
+
+        Raises:
+            Exception: The configured error.
+        """
+        raise error
+
+    review = Review(tmp_path, factories={"spotify": build, "soundcloud": build})
+    answer = review.alternatives(review.add(destination=destination))
+    assert answer.status_code == status
+    assert answer.json().get("error") == code
+    assert advice in answer.json()["detail"]
 
 
 @pytest.mark.parametrize("row_id", [1, 999])
