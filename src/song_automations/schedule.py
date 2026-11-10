@@ -155,9 +155,10 @@ def log_path(data_dir: Path) -> Path:
         data_dir: Data directory of the tool.
 
     Returns:
-        The log file.
+        The log file as a full path, since launchd does not know the folder
+        a relative one would start from.
     """
-    return data_dir / "logs" / LOG_NAME
+    return (data_dir / "logs" / LOG_NAME).absolute()
 
 
 def plist_path(agents_dir: Path) -> Path:

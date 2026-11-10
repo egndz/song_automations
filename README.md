@@ -95,7 +95,7 @@ song-automations schedule status
 song-automations schedule uninstall
 ```
 
-Run `schedule install` from the folder that holds your `.env` file, after logging in once with `song-automations login`. On macOS it writes `~/Library/LaunchAgents/com.songautomations.sync.plist` and loads it, and from then on macOS runs `song-automations --unattended sync all` at that time every day, with no terminal open. If the Mac is asleep at that time, the run happens when it wakes up. Installing again replaces the earlier schedule, which is how you change the time. Do that too after moving the project folder or rebuilding its Python environment, because the schedule remembers both paths.
+Run `schedule install` from the folder that holds your `.env` file, after logging in once with `song-automations login`. On macOS it writes `~/Library/LaunchAgents/com.songautomations.sync.plist` and loads it, and from then on macOS runs `song-automations --unattended sync all` at that time every day, with no terminal open. If the Mac is asleep at that time, the run happens when it wakes up. If it is switched off, that day is skipped. Installing again replaces the earlier schedule, which is how you change the time. Do that too after moving the project folder or rebuilding its Python environment, because the schedule remembers both paths.
 
 One run makes at most 400 Spotify searches, so a large collection fills in over several days. Each run carries on where the last one stopped.
 

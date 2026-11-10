@@ -228,6 +228,19 @@ class TestPureParts:
         )
         assert line == expected
 
+    @pytest.mark.parametrize(
+        ("data_dir", "inside"),
+        [("data", True), ("nested/data", True), ("/var/songs", False)],
+    )
+    def test_log_path_is_always_a_full_path(self, tmp_path, monkeypatch, data_dir, inside):
+        """A data directory given relative to the project still yields a full log path."""
+        monkeypatch.chdir(tmp_path)
+        log = schedule.log_path(Path(data_dir))
+        assert log.is_absolute()
+        assert log.name == "scheduled-sync.log"
+        assert log.parent.name == "logs"
+        assert (Path.cwd() in log.parents) is inside
+
     @pytest.mark.parametrize("arguments", [["--version"], ["--help"], ["schedule", "--help"]])
     def test_package_runs_as_a_module(self, monkeypatch, capsys, arguments):
         """python -m song_automations starts the command line, which the schedule relies on."""
