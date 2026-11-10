@@ -7,9 +7,11 @@ from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import SpotifyOauthError
 
 from song_automations.clients.spotify import (
+    DEFAULT_RETRY_AFTER_SECONDS,
     SpotifyClient,
     SpotifyPlaylist,
     SpotifyTrack,
+    retry_after_seconds,
 )
 from song_automations.errors import (
     RateLimitedError,
@@ -335,3 +337,47 @@ class TestSpotifyRateLimitsAndNewApi:
         client._client.search.side_effect = SpotifyOauthError("invalid_grant")
         with pytest.raises(ReauthRequiredError):
             client.search_raw("q")
+
+
+class TestRetryAfterHeader:
+    """The wait Spotify asks for is read without ever raising."""
+
+    @pytest.mark.parametrize(
+        ("headers", "expected"),
+        [
+            ({"Retry-After": "7"}, 7),
+            ({"Retry-After": 12}, 12),
+            ({"Retry-After": "2.6"}, 2),
+            ({"Retry-After": " 30 "}, 30),
+            ({"Retry-After": "-4"}, 0),
+            ({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}, DEFAULT_RETRY_AFTER_SECONDS),
+            ({"Retry-After": ""}, DEFAULT_RETRY_AFTER_SECONDS),
+            ({"Retry-After": None}, DEFAULT_RETRY_AFTER_SECONDS),
+            ({"Retry-After": "inf"}, DEFAULT_RETRY_AFTER_SECONDS),
+            ({"Retry-After": "nan"}, DEFAULT_RETRY_AFTER_SECONDS),
+            ({"Retry-After": ["3"]}, DEFAULT_RETRY_AFTER_SECONDS),
+            ({}, DEFAULT_RETRY_AFTER_SECONDS),
+            (None, DEFAULT_RETRY_AFTER_SECONDS),
+            ("not a mapping", DEFAULT_RETRY_AFTER_SECONDS),
+        ],
+    )
+    def test_header_is_read_or_defaulted(self, headers, expected):
+        """A missing, empty or malformed header falls back to the default wait."""
+        assert retry_after_seconds(headers) == expected
+
+    @pytest.mark.parametrize("headers", [None, {}, {"Retry-After": "soon"}, {"Retry-After": None}])
+    def test_limit_without_usable_header_is_waited_out(self, monkeypatch, headers):
+        """A limit with a broken header retries after the default wait instead of crashing."""
+        slept = []
+        monkeypatch.setattr("song_automations.clients.spotify.time.sleep", slept.append)
+        client = SpotifyClient.__new__(SpotifyClient)
+        client._client = MagicMock()
+        client._last_search = 0.0
+        client._searches = 0
+        client._search_budget = 1000
+        client._client.search.side_effect = [
+            SpotifyException(429, -1, "limited", headers=headers),
+            {"tracks": {"items": [{"id": "1"}]}},
+        ]
+        assert client.search_raw("q") == [{"id": "1"}]
+        assert DEFAULT_RETRY_AFTER_SECONDS + 1 in slept

@@ -19,6 +19,23 @@ MAX_WAIT_SECONDS = 60
 MAX_ATTEMPTS = 5
 SEARCH_PAUSE_SECONDS = 0.5
 SEARCH_LIMIT = 10
+DEFAULT_RETRY_AFTER_SECONDS = 5
+
+
+def retry_after_seconds(headers: dict | None) -> int:
+    """Reads how long Spotify asks to wait, whatever shape the header has.
+
+    Args:
+        headers: Response headers, possibly missing.
+
+    Returns:
+        Seconds to wait, the default when the header is absent or not a number.
+    """
+    try:
+        seconds = int(float((headers or {}).get("Retry-After")))
+    except (TypeError, ValueError, OverflowError, AttributeError):
+        return DEFAULT_RETRY_AFTER_SECONDS
+    return max(seconds, 0)
 
 
 @dataclass
@@ -177,7 +194,7 @@ class SpotifyClient:
             except SpotifyException as error:
                 last_attempt = attempt == MAX_ATTEMPTS - 1
                 if error.http_status == 429:
-                    wait = int((error.headers or {}).get("Retry-After", 5))
+                    wait = retry_after_seconds(error.headers)
                     if wait > MAX_WAIT_SECONDS or last_attempt:
                         raise RateLimitedError("Spotify", wait) from error
                     time.sleep(wait + 1)
