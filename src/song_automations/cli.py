@@ -276,6 +276,43 @@ def want_sync(
         raise typer.Exit(exit_code)
 
 
+@app.command("login")
+def login(
+    platform: Annotated[
+        str,
+        typer.Argument(help="spotify, soundcloud or all."),
+    ] = "all",
+) -> None:
+    """Open each platform's approval page in the browser and wait for the approval."""
+    targets = _targets(platform)
+    settings = _init_settings()
+    minutes = max(1, round(settings.login_wait_seconds / 60))
+    exit_code = 0
+    for target in targets:
+        label = PLATFORM_LABELS[target]
+        client_id = getattr(settings, f"{target}_client_id")
+        client_secret = getattr(settings, f"{target}_client_secret")
+        if not client_id or not client_secret:
+            console.print(
+                f"[red]Error:[/red] {target.upper()}_CLIENT_ID and {target.upper()}_CLIENT_SECRET not set."
+            )
+            exit_code = max(exit_code, 1)
+            continue
+        console.print(
+            f"Opening the {label} approval page in your browser. "
+            f"Waiting up to {minutes} minute{'s' if minutes != 1 else ''} for the approval..."
+        )
+        try:
+            with _friendly_errors():
+                _make_client(settings, target).login()
+        except typer.Exit as stop:
+            exit_code = max(exit_code, stop.exit_code)
+            continue
+        console.print(f"[green]{label} login approved and saved.[/green]")
+    if exit_code:
+        raise typer.Exit(exit_code)
+
+
 def _guarded_sync(*args, **kwargs) -> SyncResult:
     """Runs a sync and turns limits and expired logins into a plain message.
 
