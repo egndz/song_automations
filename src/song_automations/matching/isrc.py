@@ -60,7 +60,9 @@ class RecordingStore(Protocol):
         self, discogs_release_id: int, track_position: str, track_name: str
     ) -> tuple[str, int | None] | None: ...
 
-    def has_exact_spotify_match(self, discogs_release_id: int, track_position: str) -> bool: ...
+    def get_spotify_outcome(
+        self, discogs_release_id: int, track_position: str, track_name: str
+    ) -> bool | None: ...
 
 
 def with_recording_evidence(
@@ -79,8 +81,11 @@ def with_recording_evidence(
     an exact Spotify match counts too, which covers tracks the catalogue
     lacks, and the length the catalogue lists wins when both know the code.
     Fan uploads are allowed only for tracks no catalogue carries, which keeps
-    covers out. A sync and the review app both prepare their sources here, so
-    the review app offers what a sync would accept.
+    covers out. That is known only once Spotify has been asked about the
+    track, and a full Spotify sync takes several runs, so until a Spotify
+    decision is stored for the track fan uploads stay off. A sync and the
+    review app both prepare their sources here, so the review app offers what
+    a sync would accept.
 
     Args:
         source: Source track built from Discogs.
@@ -102,8 +107,8 @@ def with_recording_evidence(
             isrcs[code] = carried[1]
         if finder is not None:
             isrcs.update(finder.find(source, artist))
-    released = bool(isrcs) or store.has_exact_spotify_match(release_id, position)
-    return replace(source, isrcs=isrcs, fan_uploads=not released)
+    absent_from_spotify = store.get_spotify_outcome(release_id, position, source.title) is False
+    return replace(source, isrcs=isrcs, fan_uploads=absent_from_spotify and not isrcs)
 
 
 class IsrcFinder:

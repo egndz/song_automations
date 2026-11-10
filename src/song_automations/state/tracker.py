@@ -781,33 +781,38 @@ class StateTracker:
                 ),
             )
 
-    def has_exact_spotify_match(self, discogs_release_id: int, track_position: str) -> bool:
-        """Checks whether Spotify carries the exact version of a track.
+    def get_spotify_outcome(
+        self, discogs_release_id: int, track_position: str, track_name: str
+    ) -> bool | None:
+        """Reads what Spotify answered when it was asked about a track.
 
-        The title is not compared, unlike in get_exact_spotify_recording, and
-        that is on purpose. Both lean to the careful side: a recording code is
-        proof, so it is dropped as soon as the title at the position changed,
-        while this answer only switches fan uploads off, so a title that was
-        merely respelled on Discogs must not switch them back on.
+        The stored decision has to be for the same title. One made for another
+        title at the position, or for the same track before Discogs respelled
+        it, says nothing certain about the track as it is now, so it counts as
+        not asked. A matched row without a tier counts as the exact version,
+        as it does in a sync.
 
         Args:
             discogs_release_id: Discogs release ID.
             track_position: Track position.
+            track_name: Title the track has on Discogs now.
 
         Returns:
-            True when an exact Spotify match is stored.
+            None when Spotify has not been asked about this title yet, True
+            when it carries the exact version, False when it was asked and has
+            only another version or nothing.
         """
         with self._get_connection() as conn:
             row = conn.execute(
                 """
-                SELECT 1 FROM matched_tracks
+                SELECT COALESCE(match_tier, 'exact') = 'exact' AND destination_track_id IS NOT NULL
+                FROM matched_tracks
                 WHERE discogs_release_id = ? AND discogs_track_position = ?
-                  AND destination = 'spotify' AND match_tier = 'exact'
-                  AND destination_track_id IS NOT NULL
+                  AND track_name = ? AND destination = 'spotify'
                 """,
-                (discogs_release_id, track_position),
+                (discogs_release_id, track_position, track_name),
             ).fetchone()
-        return row is not None
+        return None if row is None else bool(row[0])
 
     def get_exact_spotify_recording(
         self, discogs_release_id: int, track_position: str, track_name: str

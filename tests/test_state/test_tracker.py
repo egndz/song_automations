@@ -918,14 +918,34 @@ class TestGateMatcherMigration:
         assert tracker.get_search_cache("spotify", "other") is None
 
     @pytest.mark.parametrize(
-        ("destination", "tier", "expected"),
-        [("spotify", "exact", True), ("spotify", "other_mix", False), ("soundcloud", "exact", False)],
+        ("destination", "stored_title", "track_id", "tier", "status", "expected"),
+        [
+            (None, None, None, None, None, None),
+            ("spotify", "Glue", None, None, None, False),
+            ("spotify", "Glue", "id", "exact", None, True),
+            ("spotify", "Glue", "id", "exact", "approved", True),
+            ("spotify", "Glue", "id", "exact", "rejected", True),
+            ("spotify", "Glue", "id", None, None, True),
+            ("spotify", "Glue", "id", "original", None, False),
+            ("spotify", "Glue", "id", "other_mix", None, False),
+            ("spotify", "Glue (Original Mix)", "id", "exact", None, None),
+            ("spotify", "Opal", None, None, None, None),
+            ("soundcloud", "Glue", "id", "exact", None, None),
+            ("soundcloud", "Glue", None, None, None, None),
+        ],
     )
-    def test_only_exact_spotify_matches_count_as_carried(self, tmp_path, destination, tier, expected):
-        """Only an exact Spotify match marks a track as carried by Spotify."""
+    def test_spotify_outcome_is_known_only_for_the_same_title(
+        self, tmp_path, destination, stored_title, track_id, tier, status, expected
+    ):
+        """Spotify counts as asked only with a stored Spotify decision for this title, and as carrying it only when exact."""
         tracker = StateTracker(tmp_path / "state.db")
-        tracker.save_matched_track(1, "A1", "x", "y", destination, "id", 0.9, match_tier=tier, matched_duration_ms=269_000)
-        assert tracker.has_exact_spotify_match(1, "A1") is expected
+        if destination:
+            tracker.save_matched_track(1, "A1", "Bicep", stored_title, destination, track_id, 0.9 if track_id else 0.0, match_tier=tier)
+        if status:
+            tracker.update_review_status(tracker.get_cached_match(1, "A1", destination).id, status)
+        assert tracker.get_spotify_outcome(1, "A1", "Glue") is expected
+        assert tracker.get_spotify_outcome(1, "B1", "Glue") is None
+        assert tracker.get_spotify_outcome(2, "A1", "Glue") is None
 
 
 class TestSpotifyRecordingCode:

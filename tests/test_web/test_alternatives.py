@@ -524,3 +524,30 @@ def test_review_page_lists_what_a_sync_flags(tmp_path, tier, confidence, label):
     assert review.client.post("/approve-all", follow_redirects=False).status_code == 303
     assert review.state.get_cached_match(1, "A1", "spotify").review_status == ("approved" if listed else "pending")
     assert "No tracks need review" in review.client.get("/").text
+
+
+@pytest.mark.parametrize(
+    ("spotify_track_id", "spotify_tier", "spotify_title", "expected"),
+    [
+        (None, None, None, []),
+        (None, None, "Glue", ["7"]),
+        ("sp1", "other_mix", "Glue", ["7"]),
+        ("sp1", "original", "Glue", ["7"]),
+        ("sp1", "exact", "Glue", []),
+        (None, None, "Opal", []),
+    ],
+)
+def test_fan_upload_is_offered_only_after_spotify_was_asked(
+    tmp_path, spotify_track_id, spotify_tier, spotify_title, expected
+):
+    """The route offers a stranger's upload under the rule a sync follows: Spotify was asked and lacks the exact version."""
+    pressing = Track("A1", "Glue", "Bicep", "3:20", 1, "Bicep EP", artist_names=("Bicep",))
+    rip = soundcloud_item(7, "Bicep - Glue", "Vinyl Digger")
+    review = Review(tmp_path, soundcloud=FakePlatform([rip]), finder=FakeFinder({}), discogs=FakeDiscogs([pressing]))
+    if spotify_title:
+        review.state.save_matched_track(
+            1, "A1", "Bicep", spotify_title, "spotify", spotify_track_id,
+            0.9 if spotify_track_id else 0.0, match_tier=spotify_tier,
+        )
+    body = review.alternatives(review.add(destination="soundcloud", matched="7")).json()
+    assert [entry["track_id"] for entry in body["alternatives"]] == expected

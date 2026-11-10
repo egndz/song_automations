@@ -630,7 +630,8 @@ class SyncEngine:
         the official upload is recognised whatever its account is called. The
         code of an exact Spotify match counts too, which covers tracks the
         catalogue lacks. Fan uploads are allowed only for tracks no catalogue
-        carries, which keeps covers out.
+        carries, which keeps covers out, and only once Spotify has been asked
+        about the track.
 
         Args:
             track: Discogs track.
