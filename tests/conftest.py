@@ -1,5 +1,6 @@
 """Pytest fixtures for song_automations tests."""
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -50,16 +51,19 @@ def isolated_data_dir(
     return folder
 
 
-@pytest.fixture(autouse=True)
-def no_real_system_commands(monkeypatch) -> None:
-    """Keeps every test from showing a real desktop notification or touching launchd.
+class CommandGuard:
+    """Refuses commands on the real machine and remembers each one it refused.
 
-    Args:
-        monkeypatch: Pytest monkeypatch.
+    Code that shows a notification swallows every error, the refusal too, so
+    the refusal alone would let such a test pass. The guard is therefore asked
+    again once the test is over.
     """
 
-    def refuse(command: list[str]) -> None:
-        """Fails instead of running a command on the real machine.
+    def __init__(self) -> None:
+        self.refused: list[list[str]] = []
+
+    def refuse(self, command: list[str]) -> None:
+        """Notes the command and fails instead of running it.
 
         Args:
             command: The command a test tried to run.
@@ -67,10 +71,30 @@ def no_real_system_commands(monkeypatch) -> None:
         Raises:
             AssertionError: Always.
         """
+        self.refused.append(list(command))
         raise AssertionError(f"a test tried to run a real command: {command}")
 
-    monkeypatch.setattr(notify, "_run_command", refuse)
-    monkeypatch.setattr(schedule, "_run_command", refuse)
+    def check(self) -> None:
+        """Fails the test when it tried to run a real command, even one whose refusal was swallowed."""
+        if self.refused:
+            pytest.fail(f"a test tried to run real commands: {self.refused}")
+
+
+@pytest.fixture(autouse=True)
+def no_real_system_commands(monkeypatch) -> Iterator[CommandGuard]:
+    """Keeps every test from showing a real desktop notification or touching launchd.
+
+    Args:
+        monkeypatch: Pytest monkeypatch.
+
+    Yields:
+        The guard, which fails the test afterwards when a command was refused.
+    """
+    guard = CommandGuard()
+    monkeypatch.setattr(notify, "_run_command", guard.refuse)
+    monkeypatch.setattr(schedule, "_run_command", guard.refuse)
+    yield guard
+    guard.check()
 
 
 @pytest.fixture

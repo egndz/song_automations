@@ -114,7 +114,8 @@ class SourceTrack:
         remixers: Remixers credited on the track but missing from the title.
         fan_uploads: Whether uploads by strangers may match. Off when Spotify
             already carries the track, since fan uploads of released music
-            turned out to be covers or tributes about as often as the record.
+            turned out to be covers or tributes about as often as the record,
+            and off as long as Spotify has not been asked about the track.
         aliases: Other names of the artists. They count when a platform names
             the artist of a track, but an account that merely has such a name
             is not trusted, since short aliases are common account names.

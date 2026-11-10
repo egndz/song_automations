@@ -14,6 +14,7 @@ from song_automations.errors import (
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
+    UnattendedLoginError,
 )
 from song_automations.state.tracker import MatchedTrack, StateTracker
 from song_automations.web.app import MAX_SEARCHES, build_source, create_app
@@ -334,6 +335,39 @@ def test_platform_errors_are_reported_not_swallowed(
     assert len(platform.queries) == 1
 
 
+@pytest.mark.parametrize(
+    ("destination", "error", "status", "code", "advice"),
+    [
+        ("spotify", ReauthRequiredError("Spotify"), 401, "reauth_required", "song-automations login spotify"),
+        ("soundcloud", UnattendedLoginError("SoundCloud"), 401, "reauth_required", "song-automations login soundcloud"),
+        ("soundcloud", LoginTimeoutError("SoundCloud", 600), 401, "reauth_required", "within 600 seconds"),
+        ("spotify", LoginFailedError("Spotify", "invalid_client"), 401, "reauth_required", "invalid_client"),
+        ("spotify", RateLimitedError("Spotify", 3600), 429, "rate_limited", "Try again after"),
+        ("spotify", SearchBudgetExhaustedError("Spotify", 400), 429, "search_budget_exhausted", "400"),
+        ("spotify", RuntimeError("no credentials"), 500, None, "Failed to initialize client: no credentials"),
+    ],
+)
+def test_errors_while_building_the_client_keep_their_meaning(tmp_path, destination, error, status, code, advice):
+    """A login or limit problem that shows while the client is built is reported as such, not as a crash."""
+
+    def build(settings):
+        """Stands in for a client that cannot be built.
+
+        Args:
+            settings: Application settings.
+
+        Raises:
+            Exception: The configured error.
+        """
+        raise error
+
+    review = Review(tmp_path, factories={"spotify": build, "soundcloud": build})
+    answer = review.alternatives(review.add(destination=destination))
+    assert answer.status_code == status
+    assert answer.json().get("error") == code
+    assert advice in answer.json()["detail"]
+
+
 @pytest.mark.parametrize("row_id", [1, 999])
 def test_unknown_track_is_not_found(tmp_path, row_id):
     """A row id that is not stored answers 404 without searching."""
@@ -440,3 +474,104 @@ def test_pages_render(tmp_path, path, offers_alternatives):
     answer = review.client.get(path)
     assert answer.status_code == 200
     assert ('onclick="showAlternatives(' in answer.text) == offers_alternatives
+
+
+@pytest.mark.parametrize(
+    ("spotify_code", "spotify_tier", "spotify_title", "expected"),
+    [
+        ("GBABC1234567", "exact", "Glue", [("7", "exact")]),
+        ("gb-abc-12-34567", "exact", "Glue", [("7", "exact")]),
+        (None, "exact", "Glue", []),
+        ("GBABC1234567", "other_mix", "Glue", []),
+        ("GBABC1234567", "exact", "Opal", []),
+        ("GBXYZ7654321", "exact", "Glue", []),
+    ],
+)
+def test_soundcloud_alternatives_use_the_code_of_the_spotify_match(
+    tmp_path, spotify_code, spotify_tier, spotify_title, expected
+):
+    """The route accepts what a sync accepts: an upload proven by the code of the exact Spotify match."""
+    upload = soundcloud_item(7, "Bicep - Glue", "Some Distributor", isrc="GB-ABC-12-34567")
+    review = Review(tmp_path, soundcloud=FakePlatform([upload]), finder=FakeFinder({}))
+    review.state.save_matched_track(
+        1, "A1", "Bicep", spotify_title, "spotify", "sp1", 0.95,
+        match_tier=spotify_tier, matched_duration_ms=200000, matched_isrc=spotify_code,
+    )
+    body = review.alternatives(review.add(destination="soundcloud", matched="7")).json()
+    assert [(entry["track_id"], entry["tier"]) for entry in body["alternatives"]] == expected
+
+
+@pytest.mark.parametrize(
+    ("tier", "confidence", "label"),
+    [
+        ("other_mix", 0.45, "Another mix of the song"),
+        ("other_mix", 0.7, "Another mix of the song"),
+        ("original", 0.85, "Original mix, not the listed version"),
+        ("exact", 0.4, None),
+        ("exact", 0.95, None),
+    ],
+)
+def test_review_page_lists_what_a_sync_flags(tmp_path, tier, confidence, label):
+    """A match of another version is listed and named whatever its confidence, and approve all clears it."""
+    review = Review(tmp_path)
+    review.state.save_matched_track(1, "A1", "Bicep", "Glue", "spotify", "t1", confidence, tier)
+    listed = tier != "exact" or confidence < review.settings.high_confidence
+    page = review.client.get("/").text
+    assert ("Searching for: <strong>Bicep - Glue</strong>" in page) == listed
+    assert ("No tracks need review" in page) != listed
+    labels = ("Another mix of the song", "Original mix, not the listed version")
+    assert [text for text in labels if text in page] == ([label] if label else [])
+    shown = {"track_ids": [review.state.get_cached_match(1, "A1", "spotify").id]}
+    assert review.client.post("/approve-all", data=shown, follow_redirects=False).status_code == 303
+    assert review.state.get_cached_match(1, "A1", "spotify").review_status == ("approved" if listed else "pending")
+    assert "No tracks need review" in review.client.get("/").text
+
+
+@pytest.mark.parametrize(("flagged", "posted", "approved"), [(12, 10, 10), (12, 0, 0), (3, 3, 3), (3, 1, 1)])
+def test_approve_all_only_approves_what_the_page_showed(tmp_path, flagged, posted, approved):
+    """Matches on other pages, or never posted, stay unreviewed."""
+    review = Review(tmp_path)
+    for number in range(flagged):
+        review.state.save_matched_track(1, f"A{number}", "Bicep", f"Glue {number}", "spotify", f"t{number}", 0.55, "other_mix")
+    ids = [review.state.get_cached_match(1, f"A{number}", "spotify").id for number in range(flagged)]
+    review.client.post("/approve-all", data={"track_ids": ids[:posted]}, follow_redirects=False)
+    statuses = [review.state.get_cached_match(1, f"A{number}", "spotify").review_status for number in range(flagged)]
+    assert statuses.count("approved") == approved
+    assert statuses[:posted] == ["approved"] * posted
+
+
+@pytest.mark.parametrize("tier", ["exact"])
+def test_approve_all_ignores_an_id_that_is_not_flagged(tmp_path, tier):
+    """A posted id of a match that needs no review is left alone."""
+    review = Review(tmp_path)
+    review.state.save_matched_track(1, "A1", "Bicep", "Glue", "spotify", "t1", 0.95, tier)
+    row = review.state.get_cached_match(1, "A1", "spotify")
+    review.client.post("/approve-all", data={"track_ids": [row.id]}, follow_redirects=False)
+    assert review.state.get_cached_match(1, "A1", "spotify").review_status == "pending"
+
+
+@pytest.mark.parametrize(
+    ("spotify_track_id", "spotify_tier", "spotify_title", "expected"),
+    [
+        (None, None, None, []),
+        (None, None, "Glue", ["7"]),
+        ("sp1", "other_mix", "Glue", ["7"]),
+        ("sp1", "original", "Glue", ["7"]),
+        ("sp1", "exact", "Glue", []),
+        (None, None, "Opal", []),
+    ],
+)
+def test_fan_upload_is_offered_only_after_spotify_was_asked(
+    tmp_path, spotify_track_id, spotify_tier, spotify_title, expected
+):
+    """The route offers a stranger's upload under the rule a sync follows: Spotify was asked and lacks the exact version."""
+    pressing = Track("A1", "Glue", "Bicep", "3:20", 1, "Bicep EP", artist_names=("Bicep",))
+    rip = soundcloud_item(7, "Bicep - Glue", "Vinyl Digger")
+    review = Review(tmp_path, soundcloud=FakePlatform([rip]), finder=FakeFinder({}), discogs=FakeDiscogs([pressing]))
+    if spotify_title:
+        review.state.save_matched_track(
+            1, "A1", "Bicep", spotify_title, "spotify", spotify_track_id,
+            0.9 if spotify_track_id else 0.0, match_tier=spotify_tier,
+        )
+    body = review.alternatives(review.add(destination="soundcloud", matched="7")).json()
+    assert [entry["track_id"] for entry in body["alternatives"]] == expected

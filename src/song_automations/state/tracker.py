@@ -781,27 +781,38 @@ class StateTracker:
                 ),
             )
 
-    def has_exact_spotify_match(self, discogs_release_id: int, track_position: str) -> bool:
-        """Checks whether Spotify carries the exact version of a track.
+    def get_spotify_outcome(
+        self, discogs_release_id: int, track_position: str, track_name: str
+    ) -> bool | None:
+        """Reads what Spotify answered when it was asked about a track.
+
+        The stored decision has to be for the same title. One made for another
+        title at the position, or for the same track before Discogs respelled
+        it, says nothing certain about the track as it is now, so it counts as
+        not asked. A matched row without a tier counts as the exact version,
+        as it does in a sync.
 
         Args:
             discogs_release_id: Discogs release ID.
             track_position: Track position.
+            track_name: Title the track has on Discogs now.
 
         Returns:
-            True when an exact Spotify match is stored.
+            None when Spotify has not been asked about this title yet, True
+            when it carries the exact version, False when it was asked and has
+            only another version or nothing.
         """
         with self._get_connection() as conn:
             row = conn.execute(
                 """
-                SELECT 1 FROM matched_tracks
+                SELECT COALESCE(match_tier, 'exact') = 'exact' AND destination_track_id IS NOT NULL
+                FROM matched_tracks
                 WHERE discogs_release_id = ? AND discogs_track_position = ?
-                  AND destination = 'spotify' AND match_tier = 'exact'
-                  AND destination_track_id IS NOT NULL
+                  AND track_name = ? AND destination = 'spotify'
                 """,
-                (discogs_release_id, track_position),
+                (discogs_release_id, track_position, track_name),
             ).fetchone()
-        return row is not None
+        return None if row is None else bool(row[0])
 
     def get_exact_spotify_recording(
         self, discogs_release_id: int, track_position: str, track_name: str
@@ -982,26 +993,34 @@ class StateTracker:
         high_confidence: float = 0.50,
         destination: Destination | None = None,
     ) -> list[MatchedTrack]:
-        """Get tracks that need review (confidence below threshold, not yet reviewed).
+        """Lists the matches a person should look at, weakest first.
+
+        A match is listed when nobody reviewed it yet and a sync flags it,
+        which is when its tier is not exact (the original mix or another mix
+        stands in for the listed version). A row without a tier counts as
+        exact, as it does in a sync. An exact match is listed as well when its
+        confidence is below the threshold.
 
         Args:
-            high_confidence: Threshold below which tracks are flagged.
+            high_confidence: Confidence below which an exact match is listed too.
             destination: Optional filter by destination.
 
         Returns:
-            List of MatchedTrack objects needing review.
+            The matches needing review, lowest confidence first.
         """
         with self._get_connection() as conn:
             if destination:
                 rows = conn.execute(
                     """
                     SELECT * FROM matched_tracks
-                    WHERE match_confidence < ?
-                    AND match_confidence > 0
+                    WHERE (
+                        COALESCE(match_tier, 'exact') != 'exact'
+                        OR (match_confidence < ? AND match_confidence > 0)
+                    )
                     AND destination_track_id IS NOT NULL
                     AND (review_status IS NULL OR review_status = 'pending')
                     AND destination = ?
-                    ORDER BY match_confidence ASC
+                    ORDER BY match_confidence ASC, id ASC
                     """,
                     (high_confidence, destination),
                 ).fetchall()
@@ -1009,11 +1028,13 @@ class StateTracker:
                 rows = conn.execute(
                     """
                     SELECT * FROM matched_tracks
-                    WHERE match_confidence < ?
-                    AND match_confidence > 0
+                    WHERE (
+                        COALESCE(match_tier, 'exact') != 'exact'
+                        OR (match_confidence < ? AND match_confidence > 0)
+                    )
                     AND destination_track_id IS NOT NULL
                     AND (review_status IS NULL OR review_status = 'pending')
-                    ORDER BY match_confidence ASC
+                    ORDER BY match_confidence ASC, id ASC
                     """,
                     (high_confidence,),
                 ).fetchall()
@@ -1030,6 +1051,7 @@ class StateTracker:
                     match_confidence=row["match_confidence"],
                     searched_at=datetime.fromisoformat(row["searched_at"]),
                     review_status=row["review_status"] or "pending",
+                    match_tier=row["match_tier"],
                 )
                 for row in rows
             ]

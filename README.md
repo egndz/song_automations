@@ -50,7 +50,7 @@ Opens the approval page of each platform in your browser, waits for you to appro
 
 The tool waits 10 minutes for the approval and then stops with a message instead of hanging. Set `LOGIN_WAIT_SECONDS` to change that. The saved logins live in `~/.song_automations/` and only your user can read them.
 
-If Spotify refuses the saved login in the middle of a sync (for example because it was made for another Spotify app, or the approval was withdrawn), the file is renamed to `.spotify_cache.stale`, the approval page opens and the run carries on once you approve it.
+If Spotify refuses the saved login in the middle of a sync (for example because it was made for another Spotify app, or the approval was withdrawn), the file is renamed to `.spotify_cache.stale-` followed by the date and time, a yellow line says where it went, the approval page opens and the run carries on once you approve it.
 
 ### Sync to Spotify
 
@@ -98,7 +98,7 @@ song-automations schedule uninstall
 
 Run `schedule install` from the folder that holds your `.env` file, after logging in once with `song-automations login`. On macOS it writes `~/Library/LaunchAgents/com.songautomations.sync.plist` and loads it, and from then on macOS runs `song-automations --unattended sync all` at that time every day, with no terminal open. If the Mac is asleep at that time, the run happens when it wakes up. If it is switched off, that day is skipped. Installing again replaces the earlier schedule, which is how you change the time. Do that too after moving the project folder or rebuilding its Python environment, because the schedule remembers both paths.
 
-One run makes at most 400 Spotify searches, so a large collection fills in over several days. Each run carries on where the last one stopped.
+The tool makes at most 400 Spotify searches in any 24 hours, so a large collection fills in over several days. Each run carries on where the last one stopped.
 
 **Unattended mode.** With `--unattended` in front of a command (or `UNATTENDED=true` in `.env`) the tool never opens a browser and never waits for one. If a login is missing, has expired or is refused, that platform stops at once with a message that names `song-automations login`, the other platform still runs, and the exit code is 2. On macOS a notification titled "Song Automations" tells you the same, so you find out without reading a log. A rate limit is reported the same way, with the time it lasts until. Using up the day's searches is the normal end of a run: exit code 0 and no notification. `song-automations login` always opens the browser, whatever the setting.
 
@@ -139,9 +139,15 @@ song-automations restore 20261110-143205
 song-automations restore 20261110-143205 --platform spotify --playlist "Discogs - Electronic" --yes
 ```
 
-A restore puts the same tracks back in the same order and recreates a playlist that the sync deleted. It shows what will change and asks before it writes; `--yes` skips the question. It first saves what the playlists hold now as a run of its own, so a restore can be undone the same way. The next sync rebuilds the playlists from your Discogs folders again, so fix the cause first, for example a wrong match in the review tool. With a daily schedule installed that next sync is the one of the following morning, so run `song-automations schedule uninstall` if you need more time.
+A restore puts the same tracks back in the same order and recreates a playlist that the sync deleted. It shows what will change and asks before it writes; `--yes` skips the question. Right before it writes a playlist it reads it once more and saves that state as a run of its own, so a restore can be undone the same way, also when the playlist changed while the question was waiting.
 
-If a snapshot cannot be written, for example because the disk is full, the sync stops with an error and leaves that playlist as it was. An unattended run also tells you so in its macOS notification. Saving costs no extra requests, because the sync reads the track list anyway; only deleting a playlist reads it once more first. The newest 30 runs are kept and older ones are deleted when a sync starts. Set `SNAPSHOT_RUNS_KEPT` to keep more or fewer.
+A playlist is found by the id it had when it was saved, so one you renamed since is restored in place. Only when that id is gone does the restore use a playlist with the saved name, and the plan then says that it is not the playlist that was saved. If two saved playlists would end up in the same playlist, the restore refuses and tells you what to do.
+
+The command exits with 0 only when every playlist is exactly as saved. If it stops partway, it names the playlist it stopped at, says whether that one may be half restored, lists the ones it did not get to and prints the command that undoes what it did. Running the same restore again finishes it.
+
+The next sync rebuilds the playlists from your Discogs folders again, so fix the cause first, for example a wrong match in the review tool. With a daily schedule installed that next sync is the one of the following morning, so run `song-automations schedule uninstall` if you need more time.
+
+If a snapshot cannot be written, for example because the disk is full, the sync stops with an error and leaves that playlist as it was. An unattended run also tells you so in its macOS notification. Saving costs no extra requests, because the sync reads the track list anyway; only deleting a playlist reads it once more first. The newest 30 runs are kept and older ones are deleted when a sync starts. Set `SNAPSHOT_RUNS_KEPT` to keep more or fewer. The snapshot folders and files can be read by your user only.
 
 A few things a restore cannot bring back. A recreated playlist is a new playlist with the old name, so links to the deleted one stay dead. A playlist the run created was empty before, so restoring that run empties it and leaves it in place. On SoundCloud a track that was taken down since then stays out, and the restore says how many did not come back. On Spotify, podcast episodes and local files in a playlist are neither saved nor touched, and tracks that are put back show the day of the restore as the day they were added.
 
@@ -213,20 +219,20 @@ Next to it, `audit-shared-ids.csv` lists every platform track that more than one
 
 Matching works release by release and only accepts a candidate that passes every check:
 
-- **Artist**: one of the credited artists (or a Discogs name variation or alias) must match the candidate artist.
+- **Artist**: one of the credited artists, under any name variation the release uses, must match the candidate artist. The other name variations and aliases Discogs lists for the artist are tried only when nothing matched under the credited names.
 - **Title**: the base title must match, ignoring punctuation, accents and catalog prefixes such as `A1`.
-- **Unwanted uploads**: covers, karaoke, DJ sets, live recordings, previews and reaction videos are rejected unless the Discogs title says the same.
+- **Unwanted uploads**: covers, karaoke, tributes, mashups, bootlegs, acoustic and instrumental versions, previews, reaction videos, live recordings and radio or TV sessions (KEXP, Tiny Desk, Maida Vale and the like) are rejected unless the Discogs title carries the same word. The word has to be there as a whole word, so a track called "Alive" does not excuse a live take, and words in the artist's own name never count against an upload. DJ sets, mixtapes, radio shows and uploads merely marked "live" are rejected too, except when their length is within 5 seconds of the Discogs length, because then the upload is the record itself on a channel with such a word in its title.
 - **Version**: the exact mix is preferred, then the original mix, then another mix of the same song. A mix with the wrong length drops to the lowest tier.
 - **Length**: an exact-version match must be within 20 seconds of the Discogs duration when both are known.
-- **No duplicates**: each streaming track is used once per playlist, and two Discogs tracks never share one match.
+- **No duplicates**: each streaming track is used once per playlist, and two tracks of one release never share one match. The same song on two of your records does share its streaming track.
 
 On Spotify the tool looks for the release as an album first, then runs one search per remaining track. On SoundCloud it also looks at sets and at the label's or artist's own account.
 
 ### SoundCloud: the same recording, proven by its code
 
-Every released recording has an ISRC, a code that names that one recording. A cover, a live take or a tribute band's version has a different code or none. For each Discogs track the tool looks the code up in the public Deezer catalogue (free, no account, and the entry has to pass the checks above as the exact version). A SoundCloud track carrying the same code is accepted whatever its account is called, so the official upload on "YusufCatStevens" or "SadeOfficial" counts for Cat Stevens and Sade.
+Every released recording has an ISRC, a code that names that one recording. A cover, a live take or a tribute band's version has a different code or none. For each Discogs track the tool looks the code up in the public Deezer catalogue (free, no account, and the entry has to pass the checks above as the exact version). A SoundCloud track carrying the same code is accepted whatever its account is called, so the official upload on "YusufCatStevens" or "SadeOfficial" counts for Cat Stevens and Sade. The recording code Spotify lists for an exact match of the same track is used to verify the SoundCloud track in the same way, which covers tracks Deezer lacks. An upload that carries the code but is more than 20 seconds shorter or longer than the recording is refused, because labels post clips under the code of the full track.
 
-Without a matching code the older rules apply. Uploads by the artist, the label or a remixer credited on Discogs are trusted (the account name has to match exactly, so tribute accounts such as "FOOT Fighters" do not pass). Anyone else's upload, such as a vinyl rip, is only accepted for tracks that neither Deezer nor Spotify carries and only when its length is within 20 seconds of the Discogs length. In a blind check, fan uploads of released music turned out to be covers, tributes or other cuts about as often as the real record, while fan uploads of rare records were mostly genuine rips.
+Without a matching code the older rules apply. Uploads by the artist, the label or a remixer credited on Discogs are trusted (the account name has to match exactly, so tribute accounts such as "FOOT Fighters" do not pass, and an account that only carries one of the artist's aliases is not trusted either, since short aliases are common account names). Anyone else's upload, such as a vinyl rip, is accepted only for tracks neither Deezer nor Spotify carries, and only after Spotify has been checked, and only when its length is within 20 seconds of the Discogs length. A full Spotify sync can take several daily runs, so SoundCloud may reach a track before Spotify has looked at it. Until then a fan upload of that track is refused, the track counts as not found on SoundCloud and is tried again after a week. `sync all` does Spotify first for that reason, and if you never sync Spotify, fan uploads are never added. In a blind check, fan uploads of released music turned out to be covers, tributes or other cuts about as often as the real record, while fan uploads of rare records were mostly genuine rips.
 
 If Deezer cannot be reached the sync still runs, it just recognises fewer official uploads that day.
 
@@ -234,15 +240,15 @@ If Deezer cannot be reached the sync still runs, it just recognises fewer offici
 
 Labels deliver most released music to SoundCloud as tracks that only Go+ subscribers can play in full; everyone else hears a 30 second clip, and some are blocked outright. On a sample of this collection, three out of four tracks that Spotify carries exist on SoundCloud only in that form.
 
-SoundCloud tells the tool, per track, what the logged-in account may do with it. By default only tracks the account can play in full are added, so a Go+ account gets the label releases and a free account does not. The sync reports how many missing tracks exist only as such gated uploads, and `report matches` lists them with the status `gated`. Set `SOUNDCLOUD_GATED_TRACKS=true` to add them anyway. Switching it off again leaves the tracks that were added in place.
+SoundCloud tells the tool, per track, what the logged-in account may do with it. By default only tracks the account can play in full are added, so a Go+ account gets the label releases and a free account does not. The sync reports how many missing tracks exist only as such gated uploads, and `report matches` lists them with the status `gated`. Set `SOUNDCLOUD_GATED_TRACKS=true` to add them anyway; an upload the account can play in full is still preferred over a gated one of the same version. Switching it off again leaves the tracks that were added in place.
 
 A gated track shows a 30 second clip instead of its length. When Discogs lists a length that therefore cannot be checked, the match is kept but marked as another version in the report, unless its ISRC proves it.
 
 ### Spotify limits
 
-Spotify apps in development mode are blocked for about a day after roughly 900 requests. One run makes at most 400 searches (`SPOTIFY_SEARCH_BUDGET`). When the budget is used up the run stops cleanly, finished folders are synced and every search is saved, so the next run carries on from there. If Spotify blocks the app anyway, the sync says until when and leaves unfinished folders alone.
+Spotify apps in development mode are blocked for about a day after roughly 900 requests. The tool makes at most 400 searches in any 24 hours (`SPOTIFY_SEARCH_BUDGET`), counted across runs, so a dry run and a real run on the same day share the allowance. When the budget is used up the run stops cleanly, finished folders are synced and every search is saved, so the next run carries on from there. If Spotify blocks the app anyway, the sync says until when and leaves unfinished folders alone.
 
-Tracks that are not found are retried after a week. A match you approved or corrected in the review tool is kept for good and never searched again. Saved search responses older than 30 days are deleted at the start of each sync. Run `song-automations report matches` to get a CSV of every match with its tier, so you can check substitutions and missing tracks.
+Tracks that are not found are retried after a week. A match you approved or corrected in the review tool is kept for good and never searched again. Saved search responses older than 30 days are deleted at the start of each sync. Run `song-automations report matches` to get a CSV of every match with its tier, so you can check substitutions and missing tracks. `song-automations review` opens a local page that lists the same matches a sync flags, which is every match that is not the exact version and that you have not approved or refused yet, weakest first.
 
 ## Development
 

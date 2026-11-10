@@ -592,7 +592,8 @@
             </div>
             {% if tracks_with_info %}
             <form action="/approve-all{% if destination_filter %}?destination={{ destination_filter }}{% endif %}" method="post" style="margin-left: auto;">
-                <button type="submit" class="bulk-btn">Approve All ({{ tracks_with_info|length }})</button>
+                {% for item in tracks_with_info %}<input type="hidden" name="track_ids" value="{{ item.track.id }}">{% endfor %}
+                <button type="submit" class="bulk-btn">Approve these {{ tracks_with_info|length }}</button>
             </form>
             {% endif %}
         </div>
@@ -607,6 +608,11 @@
                     <span class="confidence-badge {% if track.match_confidence < 0.35 %}confidence-low{% else %}confidence-medium{% endif %}">
                         {{ (track.match_confidence * 100)|int }}% Match
                     </span>
+                    {% if track.match_tier == 'original' %}
+                    <span class="confidence-badge confidence-medium">Original mix, not the listed version</span>
+                    {% elif track.match_tier == 'other_mix' %}
+                    <span class="confidence-badge confidence-medium">Another mix of the song</span>
+                    {% endif %}
                     <span class="original-search">
                         Searching for: <strong>{{ track.artist }} - {{ track.track_name }}</strong>
                     </span>
@@ -779,7 +785,7 @@
         {% else %}
         <div class="empty-state">
             <h2>All Clear!</h2>
-            <p>No tracks need review. All matches are above the confidence threshold.</p>
+            <p>No tracks need review. Every match that is not the exact version has been reviewed.</p>
         </div>
         {% endif %}
     </div>

@@ -1,5 +1,9 @@
 """Tests for Spotify client."""
 
+import json
+import os
+import time
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +12,9 @@ from spotipy.oauth2 import SpotifyOauthError
 
 from song_automations.clients.spotify import (
     DEFAULT_RETRY_AFTER_SECONDS,
+    SEARCH_WINDOW_SECONDS,
+    PrivateCacheFileHandler,
+    SearchLedger,
     SpotifyClient,
     SpotifyPlaylist,
     SpotifyTrack,
@@ -293,7 +300,7 @@ class TestSpotifyRateLimitsAndNewApi:
         client = SpotifyClient.__new__(SpotifyClient)
         client._client = MagicMock()
         client._last_search = 0.0
-        client._searches = 0
+        client._ledger = SearchLedger()
         client._search_budget = 1000
         return client
 
@@ -378,7 +385,7 @@ class TestRetryAfterHeader:
         client = SpotifyClient.__new__(SpotifyClient)
         client._client = MagicMock()
         client._last_search = 0.0
-        client._searches = 0
+        client._ledger = SearchLedger()
         client._search_budget = 1000
         client._client.search.side_effect = [
             SpotifyException(429, -1, "limited", headers=headers),
@@ -439,12 +446,59 @@ class TestSpotifyLogin:
             {"tracks": {"items": [{"id": "1"}]}},
         ]
         assert client.search_raw("q") == [{"id": "1"}]
-        stale = tmp_path / ".spotify_cache.stale"
+        (stale,) = tmp_path.glob(".spotify_cache.stale-*")
         assert stale.read_text() == "old login"
         assert client._cache_path.read_text() == "new login"
         assert stale.stat().st_mode & 0o777 == 0o600
         assert client._cache_path.stat().st_mode & 0o777 == 0o600
         client._auth.get_access_token.assert_called_once_with(as_dict=False, check_cache=False)
+
+    @pytest.mark.parametrize(
+        ("earlier", "expected_name"),
+        [
+            ([], ".spotify_cache.stale-20261110-043000"),
+            ([".spotify_cache.stale"], ".spotify_cache.stale-20261110-043000"),
+            ([".spotify_cache.stale-20261109-043000"], ".spotify_cache.stale-20261110-043000"),
+            ([".spotify_cache.stale-20261110-043000"], ".spotify_cache.stale-20261110-043000-2"),
+            (
+                [".spotify_cache.stale-20261110-043000", ".spotify_cache.stale-20261110-043000-2"],
+                ".spotify_cache.stale-20261110-043000-3",
+            ),
+        ],
+    )
+    def test_earlier_set_aside_login_is_never_overwritten(
+        self, tmp_path, monkeypatch, capsys, earlier, expected_name
+    ):
+        """Each refused login gets its own dated name, and one line says where it went."""
+
+        class FixedClock:
+            """Clock that always shows the same moment."""
+
+            @staticmethod
+            def now():
+                """Tells the time.
+
+                Returns:
+                    Half past four on the tenth of November 2026.
+                """
+                return datetime(2026, 11, 10, 4, 30, 0)
+
+        monkeypatch.setattr("song_automations.clients.spotify.datetime", FixedClock)
+        client = self._client(tmp_path, monkeypatch)
+        for name in earlier:
+            (tmp_path / name).write_text(f"kept {name}")
+        client._client.search.side_effect = [
+            SpotifyOauthError("error: invalid_grant", error="invalid_grant"),
+            {"tracks": {"items": []}},
+        ]
+        client.search_raw("q")
+        assert (tmp_path / expected_name).read_text() == "old login"
+        assert (tmp_path / expected_name).stat().st_mode & 0o777 == 0o600
+        assert all((tmp_path / name).read_text() == f"kept {name}" for name in earlier)
+        printed = capsys.readouterr().out
+        assert printed.count("\n") == 1
+        assert "The old login was moved to" in printed
+        assert str(tmp_path / expected_name) in printed
 
     @pytest.mark.parametrize("code", ["invalid_client", "invalid_grant"])
     def test_login_refused_twice_stops_instead_of_looping(self, tmp_path, monkeypatch, code):
@@ -464,7 +518,7 @@ class TestSpotifyLogin:
         with pytest.raises(ReauthRequiredError):
             client.search_raw("q")
         assert client._cache_path.read_text() == "old login"
-        assert not (tmp_path / ".spotify_cache.stale").exists()
+        assert not list(tmp_path.glob(".spotify_cache.stale*"))
         assert client._auth.get_access_token.call_count == 0
 
     @pytest.mark.parametrize("saved", [True, False])
@@ -474,7 +528,7 @@ class TestSpotifyLogin:
         client.login()
         client._auth.get_access_token.assert_called_once_with(as_dict=False, check_cache=False)
         assert client._cache_path.stat().st_mode & 0o777 == 0o600
-        assert not (tmp_path / ".spotify_cache.stale").exists()
+        assert not list(tmp_path.glob(".spotify_cache.stale*"))
 
     @pytest.mark.parametrize(
         ("raised", "expected"),
@@ -507,6 +561,79 @@ class TestSpotifyLogin:
         client = SpotifyClient(settings)
         assert isinstance(client._auth, TimedSpotifyOAuth)
         assert client._auth._wait_seconds == wait
+
+
+class FakeTokenAnswer:
+    """Answer of the Spotify token endpoint, given without any network."""
+
+    def raise_for_status(self) -> None:
+        """Reports no error."""
+
+    def json(self) -> dict:
+        """Hands out a new login.
+
+        Returns:
+            The token fields Spotify sends.
+        """
+        return {"access_token": "a-new", "refresh_token": "r-new", "expires_in": 3600, "token_type": "Bearer"}
+
+
+class TestSavedLoginStaysPrivate:
+    """Every way the Spotify login reaches the disk leaves it readable by the user only."""
+
+    @pytest.mark.parametrize(
+        ("way", "existing_mode", "umask"),
+        [
+            ("first login", None, 0o022),
+            ("first login", None, 0o000),
+            ("first login", 0o644, 0o022),
+            ("refresh", 0o644, 0o022),
+            ("refresh", 0o666, 0o000),
+            ("login command", None, 0o000),
+            ("login command", 0o644, 0o022),
+        ],
+    )
+    def test_login_is_private_before_and_after_it_is_written(self, tmp_path, monkeypatch, way, existing_mode, umask):
+        """The file is at mode 600 when the login goes in and stays there, whatever the umask."""
+        settings = Settings(spotify_client_id="id", spotify_client_secret="secret", data_dir=tmp_path)
+        client = SpotifyClient(settings)
+        cache = client._cache_path
+        seen = []
+
+        class RecordingEncoder(json.JSONEncoder):
+            """Encoder that notes how private the file is at the moment the login is written."""
+
+            def encode(self, value) -> str:
+                """Encodes the login.
+
+                Args:
+                    value: The login.
+
+                Returns:
+                    The login as JSON.
+                """
+                seen.append(cache.stat().st_mode & 0o777 if cache.exists() else None)
+                return super().encode(value)
+
+        assert isinstance(client._auth.cache_handler, PrivateCacheFileHandler)
+        client._auth.cache_handler.encoder_cls = RecordingEncoder
+        monkeypatch.setattr(client._auth._session, "post", lambda *args, **kwargs: FakeTokenAnswer())
+        monkeypatch.setattr(client._auth, "get_auth_response", lambda *args, **kwargs: "code")
+        if existing_mode is not None:
+            saved = {"access_token": "a-old", "refresh_token": "r-old", "expires_at": 0, "scope": client._auth.scope}
+            cache.write_text(json.dumps(saved) if way == "refresh" else "not a login")
+            cache.chmod(existing_mode)
+        previous = os.umask(umask)
+        try:
+            if way == "login command":
+                client.login()
+            else:
+                assert client._auth.get_access_token(as_dict=False) == "a-new"
+        finally:
+            os.umask(previous)
+        assert seen == [0o600]
+        assert cache.stat().st_mode & 0o777 == 0o600
+        assert json.loads(cache.read_text())["access_token"] == "a-new"
 
 
 class FakeCallbackServer:
@@ -714,7 +841,7 @@ class TestSpotifyUnattended:
         with pytest.raises(UnattendedLoginError):
             client.search_raw("q")
         assert client._cache_path.read_text() == "old login"
-        assert not (tmp_path / ".spotify_cache.stale").exists()
+        assert not list(tmp_path.glob(".spotify_cache.stale*"))
         assert client._auth.get_access_token.call_count == 0
         assert client._client.search.call_count == 1
 
@@ -800,3 +927,54 @@ class TestSpotifyUnattended:
                 auth.get_auth_response()
             assert "redirect address" in str(caught.value)
             assert prompts == []
+
+
+class TestSearchLedger:
+    """The search allowance is counted over 24 hours and across runs."""
+
+    @pytest.mark.parametrize(
+        ("ages", "expected"),
+        [
+            ([10, 3600, SEARCH_WINDOW_SECONDS - 1], 3),
+            ([SEARCH_WINDOW_SECONDS, SEARCH_WINDOW_SECONDS + 5], 0),
+            ([60, SEARCH_WINDOW_SECONDS + 60], 1),
+            ([], 0),
+        ],
+    )
+    def test_only_the_last_day_counts(self, tmp_path, ages, expected):
+        """Searches older than 24 hours leave the count, also when read by a later run."""
+        now = 1_800_000_000.0
+        path = tmp_path / "searches.json"
+        first_run = SearchLedger(path)
+        for age in ages:
+            first_run.record(now - age)
+        assert SearchLedger(path).recent(now) == expected
+
+    @pytest.mark.parametrize("content", ["not json", "{}", "[1, \"two\", null]", ""])
+    def test_damaged_file_does_not_stop_a_run(self, tmp_path, content):
+        """A file that cannot be read counts as few or no searches, never as an error."""
+        path = tmp_path / "searches.json"
+        path.write_text(content)
+        assert SearchLedger(path).recent(1_800_000_000.0) <= 1
+
+    @pytest.mark.parametrize(("used", "allowed"), [(0, 2), (1, 1), (2, 0)])
+    def test_dry_run_and_real_run_share_one_allowance(self, tmp_path, monkeypatch, used, allowed):
+        """Searches an earlier run made today come off what this run may make."""
+        monkeypatch.setattr("song_automations.clients.spotify.time.sleep", lambda _: None)
+        path = tmp_path / "searches.json"
+        earlier = SearchLedger(path)
+        for _ in range(used):
+            earlier.record(time.time() - 60)
+        client = SpotifyClient.__new__(SpotifyClient)
+        client._client = MagicMock()
+        client._client.search.return_value = {"tracks": {"items": []}}
+        client._last_search = 0.0
+        client._search_budget = 2
+        client._ledger = SearchLedger(path)
+        for _ in range(allowed):
+            client.search_raw("q")
+        with pytest.raises(SearchBudgetExhaustedError) as stopped:
+            client.search_raw("q")
+        assert client._client.search.call_count == allowed
+        assert stopped.value.resumes_at > time.time()
+        assert "a run after" in str(stopped.value)

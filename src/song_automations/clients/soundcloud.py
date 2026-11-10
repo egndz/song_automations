@@ -92,13 +92,29 @@ class OAuthCallbackHandler(BaseHTTPRequestHandler):
     """HTTP handler for OAuth callback."""
 
     authorization_code: str | None = None
+    authorization_error: str | None = None
 
     def do_GET(self) -> None:
-        """Handle GET request with authorization code."""
+        """Handle GET request with the authorization code or the refusal.
+
+        A refused approval comes back with an error instead of a code, and it
+        is kept so that the login can stop at once instead of waiting.
+        """
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
 
-        if "code" in params:
+        if "error" in params:
+            description = params.get("error_description", [""])[0]
+            reason = params["error"][0]
+            OAuthCallbackHandler.authorization_error = f"{reason}: {description}" if description else reason
+            self.send_response(400)
+            self.send_header("Content-type", "text/html")
+            self.end_headers()
+            self.wfile.write(
+                b"<html><body><h1>Authorization was not given.</h1>"
+                b"<p>You can close this window.</p></body></html>"
+            )
+        elif "code" in params:
             OAuthCallbackHandler.authorization_code = params["code"][0]
             self.send_response(200)
             self.send_header("Content-type", "text/html")
@@ -245,10 +261,12 @@ class SoundCloudClient:
 
         Raises:
             LoginTimeoutError: When the page is not approved in time.
-            LoginFailedError: When the local port cannot be listened on.
+            LoginFailedError: When the local port cannot be listened on, or the
+                approval page comes back with an error such as access_denied.
         """
         wait = self._settings.login_wait_seconds
         OAuthCallbackHandler.authorization_code = None
+        OAuthCallbackHandler.authorization_error = None
         try:
             server = HTTPServer(("localhost", port), OAuthCallbackHandler)
         except OSError as error:
@@ -256,7 +274,10 @@ class SoundCloudClient:
         deadline = time.monotonic() + wait
         try:
             webbrowser.open(auth_url)
-            while OAuthCallbackHandler.authorization_code is None:
+            while (
+                OAuthCallbackHandler.authorization_code is None
+                and OAuthCallbackHandler.authorization_error is None
+            ):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise LoginTimeoutError(PLATFORM, wait)
@@ -265,7 +286,11 @@ class SoundCloudClient:
         finally:
             server.server_close()
         code = OAuthCallbackHandler.authorization_code
+        refusal = OAuthCallbackHandler.authorization_error
         OAuthCallbackHandler.authorization_code = None
+        OAuthCallbackHandler.authorization_error = None
+        if refusal is not None:
+            raise LoginFailedError(PLATFORM, f"the approval page answered {refusal}")
         return code
 
     def authenticate(self) -> None:

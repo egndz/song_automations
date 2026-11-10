@@ -23,9 +23,6 @@ from song_automations.matching.matcher import (
 MAX_ALIAS_SEARCHES = 2
 EVERY_ACCESS_KEY = "@all"
 MAX_ALBUMS = 2
-MIN_BARE_TITLE_QUERY = 8
-PLAYLIST_LIMIT = 20
-ALBUM_TITLE_RATIO_WORDS = 1
 
 
 class SearchCache(Protocol):

@@ -219,6 +219,15 @@ class TestPureParts:
                 "/opt/tool/env/bin/python -m song_automations "
                 "--unattended sync spotify >> /data/logs/scheduled-sync.log 2>&1",
             ),
+            (
+                "/home/me/100% vinyl",
+                "soundcloud",
+                0,
+                0,
+                "0 0 * * * cd '/home/me/100\\% vinyl' && PYTHONUNBUFFERED=1 _TYPER_STANDARD_TRACEBACK=1 "
+                "/opt/tool/env/bin/python -m song_automations "
+                "--unattended sync soundcloud >> /data/logs/scheduled-sync.log 2>&1",
+            ),
         ],
     )
     def test_crontab_line_does_the_same(self, folder, target, hour, minute, expected):
@@ -227,6 +236,22 @@ class TestPureParts:
             PYTHON, target, hour, minute, Path(folder), Path("/data/logs/scheduled-sync.log")
         )
         assert line == expected
+
+    @pytest.mark.parametrize(
+        ("python", "folder", "log", "escaped"),
+        [
+            (PYTHON, "/home/me/songs", "/data/logs/scheduled-sync.log", 0),
+            (PYTHON, "/home/me/100%", "/data/logs/scheduled-sync.log", 1),
+            ("/opt/50%off/python", "/home/me/100% vinyl", "/data/%Y/sync.log", 3),
+            (PYTHON, "/home/me/a%%b", "/data/logs/scheduled-sync.log", 2),
+        ],
+    )
+    def test_percent_signs_are_escaped_for_cron(self, python, folder, log, escaped):
+        """cron ends a command at a bare percent sign, so every one gets a backslash, which cron removes."""
+        line = schedule.crontab_line(python, "all", 4, 30, Path(folder), Path(log))
+        assert line.count("\\%") == line.count("%") == escaped
+        unescaped = line.replace("\\%", "%")
+        assert all(part in unescaped for part in (python, folder, log))
 
     @pytest.mark.parametrize(
         ("data_dir", "inside"),
@@ -386,6 +411,69 @@ class TestStatus:
         assert status.target is None
 
 
+    @pytest.mark.parametrize(
+        ("content", "time", "damaged"),
+        [
+            ({"StartCalendarInterval": {"Hour": 7, "Minute": 0}}, "07:00", False),
+            ({"StartCalendarInterval": {"Hour": "four", "Minute": 30}}, None, True),
+            ({"StartCalendarInterval": {"Hour": "4", "Minute": "30"}}, None, True),
+            ({"StartCalendarInterval": {"Hour": 4, "Minute": [30]}}, None, True),
+            ({"StartCalendarInterval": {"Hour": 4.5, "Minute": 30}}, None, True),
+            ({"StartCalendarInterval": {"Hour": True, "Minute": 30}}, None, True),
+            ({"StartCalendarInterval": {"Hour": 99, "Minute": 0}}, None, True),
+            ({"StartCalendarInterval": {"Hour": 4, "Minute": -1}}, None, True),
+            ({"StartCalendarInterval": {"Hour": 4}}, None, True),
+            ({"StartCalendarInterval": "daily"}, None, True),
+            ({"StartCalendarInterval": [{"Hour": 4, "Minute": 30}]}, None, True),
+            ({}, None, True),
+            (
+                {
+                    "StartCalendarInterval": {"Hour": 4, "Minute": 30},
+                    "ProgramArguments": "sync all",
+                    "StandardOutPath": 5,
+                },
+                "04:30",
+                False,
+            ),
+            (
+                {
+                    "StartCalendarInterval": {"Hour": 4, "Minute": 30},
+                    "ProgramArguments": [["all"]],
+                    "StandardOutPath": {"path": "x"},
+                },
+                "04:30",
+                False,
+            ),
+        ],
+    )
+    def test_file_with_the_wrong_kind_of_values_is_damaged_not_a_crash(self, tmp_path, content, time, damaged):
+        """A schedule file whose time is not a whole hour and minute is reported as damaged."""
+        agents = tmp_path / "LaunchAgents"
+        agents.mkdir()
+        schedule.plist_path(agents).write_bytes(plistlib.dumps(content))
+        status = schedule.read_status(FakeLaunchd(loaded=True).system(agents))
+        assert (status.installed, status.time, status.damaged) == (True, time, damaged)
+        assert (status.target, status.log_path) == (None, None)
+
+    @pytest.mark.parametrize(
+        ("content", "loaded", "damaged"),
+        [
+            (None, False, False),
+            (None, True, False),
+            (b"not a plist", False, True),
+            (b"not a plist", True, True),
+            (plistlib.dumps(["a", "list"]), True, True),
+        ],
+    )
+    def test_only_a_file_that_is_there_can_be_damaged(self, tmp_path, content, loaded, damaged):
+        """An unreadable file is damaged, a missing one is just not installed."""
+        agents = tmp_path / "LaunchAgents"
+        agents.mkdir()
+        if content is not None:
+            schedule.plist_path(agents).write_bytes(content)
+        assert schedule.read_status(FakeLaunchd(loaded=loaded).system(agents)).damaged is damaged
+
+
 class TestScheduleCommands:
     """The schedule commands as typed in a terminal."""
 
@@ -507,6 +595,28 @@ class TestScheduleCommands:
             (tmp_path / "LaunchAgents" / "com.songautomations.sync.plist").unlink()
         result = CliRunner().invoke(cli.app, ["schedule", "status"])
         assert words in _flat(result.output)
+
+    @pytest.mark.parametrize(
+        ("content", "loaded", "state"),
+        [
+            (plistlib.dumps({"StartCalendarInterval": {"Hour": "four", "Minute": 30}}), True, "Installed and loaded"),
+            (plistlib.dumps({"StartCalendarInterval": {"Hour": 4, "Minute": 75}}), False, "Installed but not loaded"),
+            (b"not a plist", True, "Installed and loaded"),
+        ],
+    )
+    def test_status_calls_a_damaged_schedule_file_damaged(self, tmp_path, monkeypatch, content, loaded, state):
+        """Status neither crashes on a damaged file nor shows a time, and says how to repair it."""
+        self._stage(tmp_path, monkeypatch, launchd=FakeLaunchd(loaded=loaded))
+        agents = tmp_path / "LaunchAgents"
+        agents.mkdir()
+        schedule.plist_path(agents).write_bytes(content)
+        result = CliRunner().invoke(cli.app, ["schedule", "status"])
+        output = _flat(result.output)
+        assert result.exit_code == 0
+        assert state in output
+        assert "schedule file is damaged" in output
+        assert "schedule install' again" in output
+        assert "Runs every day at" not in output
 
     @pytest.mark.parametrize(("installed", "words"), [(True, "was removed"), (False, "No schedule was installed")])
     def test_uninstall_removes_the_schedule(self, tmp_path, monkeypatch, installed, words):

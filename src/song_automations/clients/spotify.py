@@ -1,12 +1,19 @@
 """Spotify API client for playlist management and track search."""
 
+import json
 import logging
+import math
+import os
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
 import spotipy
+from rich.console import Console
+from rich.markup import escape
+from spotipy.cache_handler import CacheFileHandler
 from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import (
     SpotifyOAuth,
@@ -15,6 +22,7 @@ from spotipy.oauth2 import (
     start_local_http_server,
 )
 
+from song_automations.clients.http import parse_retry_after
 from song_automations.config import Settings
 from song_automations.errors import (
     LoginFailedError,
@@ -26,14 +34,18 @@ from song_automations.errors import (
 )
 
 logger = logging.getLogger(__name__)
+console = Console()
 
 PLATFORM = "Spotify"
 STALE_LOGIN_ERRORS = frozenset({"invalid_client", "invalid_grant"})
 STALE_SUFFIX = ".stale"
+STALE_STAMP = "%Y%m%d-%H%M%S"
 PLAYLIST_CACHE_TTL = 300
 MAX_WAIT_SECONDS = 60
 MAX_ATTEMPTS = 5
 SEARCH_PAUSE_SECONDS = 0.5
+SEARCH_WINDOW_SECONDS = 24 * 3600
+SEARCH_LEDGER_FILE = ".spotify_searches.json"
 SEARCH_LIMIT = 10
 DEFAULT_RETRY_AFTER_SECONDS = 5
 
@@ -47,11 +59,86 @@ def retry_after_seconds(headers: dict | None) -> int:
     Returns:
         Seconds to wait, the default when the header is absent or not a number.
     """
-    try:
-        seconds = int(float((headers or {}).get("Retry-After")))
-    except (TypeError, ValueError, OverflowError, AttributeError):
-        return DEFAULT_RETRY_AFTER_SECONDS
-    return max(seconds, 0)
+    return parse_retry_after(headers, DEFAULT_RETRY_AFTER_SECONDS)
+
+
+class SearchLedger:
+    """Remembers when searches were made, so the quota holds across runs.
+
+    Spotify counts requests over about a day, not per run, so a dry run
+    followed by a real run must share one allowance.
+
+    Args:
+        path: File that keeps the times, None to keep them in memory only.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._path = path
+        self._times = self._load()
+
+    def _load(self) -> list[float]:
+        """Reads the stored times.
+
+        Returns:
+            Times in seconds since the epoch, empty when nothing usable is stored.
+        """
+        if self._path is None or not self._path.exists():
+            return []
+        try:
+            stored = json.loads(self._path.read_text())
+        except (OSError, ValueError):
+            return []
+        if not isinstance(stored, list):
+            return []
+        return [
+            float(moment)
+            for moment in stored
+            if isinstance(moment, int | float) and not isinstance(moment, bool) and math.isfinite(moment)
+        ]
+
+    def recent(self, now: float) -> int:
+        """Counts the searches of the last 24 hours and forgets older ones.
+
+        The file is read again each time, so a review page and a scheduled
+        sync running together share one count.
+
+        Args:
+            now: Current time in seconds since the epoch.
+
+        Returns:
+            Number of searches inside the window.
+        """
+        known = set(self._times) | set(self._load())
+        self._times = sorted(moment for moment in known if now - moment < SEARCH_WINDOW_SECONDS)
+        return len(self._times)
+
+    def record(self, now: float) -> None:
+        """Notes one search and stores the list.
+
+        The list is written to a temporary file and moved into place, so a
+        crash cannot leave a half-written count, and a disk that cannot be
+        written to costs the stored count, not the run.
+
+        Args:
+            now: Current time in seconds since the epoch.
+        """
+        self._times.append(now)
+        if self._path is None:
+            return
+        scratch = self._path.with_name(f"{self._path.name}.tmp")
+        try:
+            scratch.write_text(json.dumps(self._times))
+            os.replace(scratch, self._path)
+        except OSError as error:
+            logger.warning("Could not store the Spotify search count: %s", error)
+
+    def frees_at(self) -> float | None:
+        """Tells when the oldest search leaves the window.
+
+        Returns:
+            Time in seconds since the epoch, None when nothing is recorded.
+        """
+        return min(self._times) + SEARCH_WINDOW_SECONDS if self._times else None
 
 
 @dataclass
@@ -135,6 +222,30 @@ class SearchResult:
 
     track: SpotifyTrack
     is_verified: bool
+
+
+class PrivateCacheFileHandler(CacheFileHandler):
+    """Saves the Spotify login in a file only the user can read.
+
+    Every write of the login goes through here: the first login spotipy asks
+    for by itself, the login command and each refresh. The file is made
+    private before the login is written into it, whatever the spotipy version
+    does about permissions.
+    """
+
+    def save_token_to_cache(self, token_info: dict) -> None:
+        """Writes the login to the cache file and leaves the file at mode 600.
+
+        Args:
+            token_info: The login as spotipy holds it.
+        """
+        path = Path(self.cache_path)
+        try:
+            path.touch(mode=0o600, exist_ok=True)
+            path.chmod(0o600)
+            path.write_text(json.dumps(token_info, cls=self.encoder_cls), encoding="utf-8")
+        except OSError as error:
+            logger.warning("The Spotify login could not be saved to %s: %s", path, error)
 
 
 class TimedSpotifyOAuth(SpotifyOAuth):
@@ -258,7 +369,7 @@ class SpotifyClient:
             client_secret=settings.spotify_client_secret,
             redirect_uri=settings.spotify_redirect_uri,
             scope=" ".join(self.SCOPES),
-            cache_path=str(self._cache_path),
+            cache_handler=PrivateCacheFileHandler(cache_path=str(self._cache_path)),
             open_browser=True,
         )
         self._client = spotipy.Spotify(
@@ -269,7 +380,7 @@ class SpotifyClient:
         )
         self._last_search = 0.0
         self._search_budget = settings.spotify_search_budget
-        self._searches = 0
+        self._ledger = SearchLedger(settings.data_dir / SEARCH_LEDGER_FILE)
         self._user_id: str | None = None
         self._playlist_cache = CachedPlaylists()
 
@@ -305,12 +416,20 @@ class SpotifyClient:
     def _set_login_aside(self) -> Path | None:
         """Renames the saved login so that it is no longer used but not lost.
 
+        The new name carries the time, and a number when that name is taken,
+        so a login set aside earlier is never overwritten.
+
         Returns:
             Where the saved login went, or None when there was none.
         """
         if not self._cache_path.exists():
             return None
-        stale = self._cache_path.with_name(self._cache_path.name + STALE_SUFFIX)
+        name = f"{self._cache_path.name}{STALE_SUFFIX}-{datetime.now().strftime(STALE_STAMP)}"
+        stale = self._cache_path.with_name(name)
+        repeat = 1
+        while stale.exists():
+            repeat += 1
+            stale = self._cache_path.with_name(f"{name}-{repeat}")
         self._cache_path.replace(stale)
         stale.chmod(0o600)
         return stale
@@ -340,6 +459,13 @@ class SpotifyClient:
             error.error,
             stale,
         )
+        if stale is not None:
+            console.print(
+                f"[yellow]Spotify refused the saved login. The old login was moved to "
+                f"{escape(str(stale))} and a new one is being asked for.[/yellow]",
+                soft_wrap=True,
+                highlight=False,
+            )
         self.login()
 
     def _call(self, method, *args, **kwargs):
@@ -430,14 +556,15 @@ class SpotifyClient:
         return self._call(self._client.album, album_id)
 
     def _pace(self) -> None:
-        """Spaces out searches and stops the run when its search budget is used.
+        """Spaces out searches and stops the run when the searches of the day are used.
 
         Raises:
-            SearchBudgetExhaustedError: When the run has made all the searches it may make.
+            SearchBudgetExhaustedError: When the last 24 hours already hold all the searches allowed.
         """
-        if self._searches >= self._search_budget:
-            raise SearchBudgetExhaustedError(PLATFORM, self._search_budget)
-        self._searches += 1
+        now = time.time()
+        if self._ledger.recent(now) >= self._search_budget:
+            raise SearchBudgetExhaustedError(PLATFORM, self._search_budget, self._ledger.frees_at())
+        self._ledger.record(now)
         pause = SEARCH_PAUSE_SECONDS - (time.monotonic() - self._last_search)
         if pause > 0:
             time.sleep(pause)

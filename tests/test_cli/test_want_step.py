@@ -26,7 +26,7 @@ STOPPING_ERRORS = [
     (ReauthRequiredError("Spotify"), 2, "Your Spotify login has expired"),
     (LoginTimeoutError("SoundCloud", 600), 2, "was not approved within 600 seconds"),
     (LoginFailedError("Spotify", "invalid_client"), 2, "did not go through (invalid_client)"),
-    (SearchBudgetExhaustedError("Spotify", 400), 0, "used its 400 Spotify searches"),
+    (SearchBudgetExhaustedError("Spotify", 400), 0, "400 Spotify searches allowed per day are used"),
     (RateLimitError(120), 2, "SoundCloud has rate limited this app"),
 ]
 
@@ -251,7 +251,7 @@ class TestSharedErrorMessages:
         monkeypatch.setattr("song_automations.errors.datetime", FixedClock)
         monkeypatch.setattr(cli, "_run_sync", run_sync)
         with pytest.raises(typer.Exit) as stopped:
-            cli._guarded_sync()
+            cli._guarded_sync(make_settings())
         from_sync = flat(capsys.readouterr().out)
         result, _ = self._want_sync(
             monkeypatch, make_settings(), ["--platform", "spotify"], {"spotify": error}

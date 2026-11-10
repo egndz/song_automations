@@ -30,6 +30,7 @@ BOOTSTRAP_PAUSE_SECONDS = 1.0
 TIME_PATTERN = re.compile(r"^(\d{1,2}):(\d{2})$")
 EXIT_CODE_PATTERN = re.compile(r"last exit code = (-?\d+)")
 RUNNING_PATTERN = re.compile(r"^\s*state = running\s*$", re.MULTILINE)
+CRON_PERCENT = "\\%"
 RUN_ENVIRONMENT = {"PYTHONUNBUFFERED": "1", "_TYPER_STANDARD_TRACEBACK": "1"}
 EXIT_CODE_MEANINGS = {
     0: "finished, or stopped normally after using its searches",
@@ -78,6 +79,7 @@ class ScheduleStatus:
         last_exit_code: Exit code of the last run, None when launchd reports none.
         log_path: File the runs write to, None when unknown.
         plist_path: Where the schedule file is or would be.
+        damaged: Whether the schedule file is there but names no time of day to run at.
     """
 
     installed: bool
@@ -88,6 +90,7 @@ class ScheduleStatus:
     last_exit_code: int | None
     log_path: Path | None
     plist_path: Path
+    damaged: bool = False
 
 
 def _run_command(command: list[str]) -> subprocess.CompletedProcess:
@@ -220,6 +223,10 @@ def crontab_line(
 ) -> str:
     """Writes the crontab line that does what the macOS schedule does.
 
+    cron reads a percent sign in a command as the end of the line, even inside
+    quotes, so each one is written with a backslash in front, which cron takes
+    away again before the shell sees the command.
+
     Args:
         python: Path of the Python interpreter that has the tool installed.
         target: all, spotify or soundcloud.
@@ -233,10 +240,8 @@ def crontab_line(
     """
     environment = " ".join(f"{name}={value}" for name, value in RUN_ENVIRONMENT.items())
     command = " ".join(shlex.quote(part) for part in sync_command(python, target))
-    return (
-        f"{minute} {hour} * * * cd {shlex.quote(str(working_dir))} && "
-        f"{environment} {command} >> {shlex.quote(str(log))} 2>&1"
-    )
+    work = f"cd {shlex.quote(str(working_dir))} && {environment} {command} >> {shlex.quote(str(log))} 2>&1"
+    return f"{minute} {hour} * * * {work.replace('%', CRON_PERCENT)}"
 
 
 def check_request(target: str, working_dir: Path) -> None:
@@ -383,6 +388,26 @@ def _read_plist(path: Path) -> dict:
     return content if isinstance(content, dict) else {}
 
 
+def _time_of_day(interval: object) -> str | None:
+    """Reads the time of day a schedule file names.
+
+    Args:
+        interval: The StartCalendarInterval entry of the file, whatever it holds.
+
+    Returns:
+        The time as HH:MM, or None when the entry does not hold a whole hour
+        and minute that make a time of day.
+    """
+    if not isinstance(interval, dict):
+        return None
+    hour, minute = interval.get("Hour"), interval.get("Minute")
+    if type(hour) is not int or type(minute) is not int:
+        return None
+    if not (0 <= hour < 24 and 0 <= minute < 60):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
 def read_status(system: ScheduleSystem) -> ScheduleStatus:
     """Collects what the schedule file and launchd say about the schedule.
 
@@ -395,12 +420,10 @@ def read_status(system: ScheduleSystem) -> ScheduleStatus:
     path = plist_path(system.agents_dir)
     installed = path.is_file()
     content = _read_plist(path) if installed else {}
-    interval = content.get("StartCalendarInterval") or {}
-    arguments = content.get("ProgramArguments") or []
+    arguments = content.get("ProgramArguments")
+    last_argument = arguments[-1] if isinstance(arguments, list) and arguments else None
     log = content.get("StandardOutPath")
-    time_text = None
-    if isinstance(interval, dict) and "Hour" in interval and "Minute" in interval:
-        time_text = f"{int(interval['Hour']):02d}:{int(interval['Minute']):02d}"
+    time_text = _time_of_day(content.get("StartCalendarInterval"))
     result = system.run([LAUNCHCTL, "print", service_target(system.uid)])
     loaded = result.returncode == 0
     report = (result.stdout or "") if loaded else ""
@@ -410,10 +433,11 @@ def read_status(system: ScheduleSystem) -> ScheduleStatus:
         loaded=loaded,
         running=bool(RUNNING_PATTERN.search(report)),
         time=time_text,
-        target=arguments[-1] if arguments and arguments[-1] in TARGETS else None,
+        target=last_argument if last_argument in TARGETS else None,
         last_exit_code=int(exit_code[1]) if exit_code else None,
-        log_path=Path(log) if log else None,
+        log_path=Path(log) if isinstance(log, str) and log else None,
         plist_path=path,
+        damaged=installed and time_text is None,
     )
 
 
@@ -522,6 +546,11 @@ def status_command() -> None:
     else:
         console.print(
             "[yellow]Loaded, but its schedule file is gone.[/yellow] "
+            "Run 'song-automations schedule install' again."
+        )
+    if status.damaged:
+        console.print(
+            "[yellow]The schedule file is damaged: it names no time of day to run at.[/yellow] "
             "Run 'song-automations schedule install' again."
         )
     if status.time:

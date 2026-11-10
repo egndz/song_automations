@@ -224,6 +224,31 @@ def state(tmp_path):
     return StateTracker(tmp_path / "state.db")
 
 
+def settings_beside(state, **overrides) -> Settings:
+    """Builds settings whose data directory is the temporary folder of the state database.
+
+    Without a data directory the settings would point at the real one in the
+    home folder, and anything an engine wrote would land there.
+
+    Args:
+        state: Tracker.
+        **overrides: Settings to change.
+
+    Returns:
+        Settings that read no .env file and keep their data next to the database.
+    """
+    return Settings(_env_file=None, data_dir=state._db_path.parent, **overrides)
+
+
+@pytest.mark.parametrize("overrides", [{}, {"soundcloud_gated_tracks": True}, {"unattended": True}])
+def test_engine_settings_stay_in_the_temporary_folder(state, tmp_path, overrides):
+    """Every path the engine settings name lies inside the temporary folder of the test."""
+    settings = settings_beside(state, **overrides)
+    paths = [settings.data_dir, settings.db_path, settings.cache_dir, settings.reports_dir, settings.log_path]
+    assert all(path.is_relative_to(tmp_path) for path in paths)
+    assert all(getattr(settings, name) == value for name, value in overrides.items())
+
+
 def run(state, discogs, spotify, folder_names=None, dry_run=False):
     """Runs a Spotify sync.
 
@@ -237,7 +262,7 @@ def run(state, discogs, spotify, folder_names=None, dry_run=False):
     Returns:
         The result.
     """
-    engine = SyncEngine(Settings(_env_file=None), discogs, state, Console(quiet=True))
+    engine = SyncEngine(settings_beside(state), discogs, state, Console(quiet=True))
     return engine.sync_to_spotify(spotify, include_wantlist=False, folder_names=folder_names, dry_run=dry_run)
 
 
@@ -393,24 +418,70 @@ class FakeFinder:
         return self.codes
 
 
+def store_spotify_decision(state, outcome, title="Glue"):
+    """Stores what Spotify answered for track A1 of release 1.
+
+    Args:
+        state: Tracker.
+        outcome: unknown for no stored decision, missing for a track Spotify
+            lacks, or the tier of the match Spotify has.
+        title: Title the decision was made for.
+    """
+    if outcome == "unknown":
+        return
+    found = outcome != "missing"
+    state.save_matched_track(
+        1, "A1", "Bicep", title, "spotify", "sp1" if found else None, 0.9 if found else 0.0,
+        match_tier=outcome if found else None,
+    )
+
+
 @pytest.mark.parametrize(
-    ("destination", "codes", "on_spotify", "isrcs", "fan_uploads", "lookups"),
+    ("destination", "codes", "spotify", "isrcs", "fan_uploads", "lookups"),
     [
-        ("soundcloud", {"GBCFB1700231"}, False, {"GBCFB1700231"}, False, 1),
-        ("soundcloud", set(), False, set(), True, 1),
-        ("soundcloud", set(), True, set(), False, 1),
-        ("spotify", {"GBCFB1700231"}, False, set(), True, 0),
+        ("soundcloud", set(), "unknown", set(), False, 1),
+        ("soundcloud", set(), "missing", set(), True, 1),
+        ("soundcloud", set(), "other_mix", set(), True, 1),
+        ("soundcloud", set(), "original", set(), True, 1),
+        ("soundcloud", set(), "exact", set(), False, 1),
+        ("soundcloud", {"GBCFB1700231"}, "unknown", {"GBCFB1700231"}, False, 1),
+        ("soundcloud", {"GBCFB1700231"}, "missing", {"GBCFB1700231"}, False, 1),
+        ("soundcloud", {"GBCFB1700231"}, "other_mix", {"GBCFB1700231"}, False, 1),
+        ("soundcloud", {"GBCFB1700231"}, "exact", {"GBCFB1700231"}, False, 1),
+        ("spotify", {"GBCFB1700231"}, "unknown", set(), False, 0),
+        ("spotify", {"GBCFB1700231"}, "exact", set(), False, 0),
     ],
 )
-def test_released_tracks_refuse_fan_uploads(state, destination, codes, on_spotify, isrcs, fan_uploads, lookups):
-    """A track that a catalogue or Spotify carries takes only verified uploads, and only SoundCloud looks codes up."""
-    track = discogs_track()
-    if on_spotify:
-        state.save_matched_track(1, "A1", "Bicep", "Glue", "spotify", "sp1", 0.9, match_tier="exact")
+def test_fan_uploads_need_spotify_to_have_been_asked(state, destination, codes, spotify, isrcs, fan_uploads, lookups):
+    """A stranger's upload may match only once Spotify was asked, lacks the exact version, and no code is known."""
+    store_spotify_decision(state, spotify)
     finder = FakeFinder(codes)
-    engine = SyncEngine(Settings(_env_file=None), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
-    source = engine._to_source(track, Release(1, "Release", "Bicep", 2017, 1, "Folder"), destination)
+    engine = SyncEngine(settings_beside(state), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
+    source = engine._to_source(discogs_track(), Release(1, "Release", "Bicep", 2017, 1, "Folder"), destination)
     assert (set(source.isrcs), source.fan_uploads, len(finder.asked)) == (set(isrcs), fan_uploads, lookups)
+
+
+@pytest.mark.parametrize(
+    ("stored_title", "spotify", "fan_uploads", "isrcs"),
+    [
+        ("Glue", "missing", True, set()),
+        ("Glue", "exact", False, {"GBCFB1700231"}),
+        ("Glue (Original Mix)", "missing", False, set()),
+        ("Glue (Original Mix)", "exact", False, set()),
+        ("Opal", "missing", False, set()),
+        ("Opal", "other_mix", False, set()),
+        ("Opal", "exact", False, set()),
+    ],
+)
+def test_spotify_decision_for_another_title_counts_as_not_asked(state, stored_title, spotify, fan_uploads, isrcs):
+    """After Discogs changed the title at a position, the old Spotify answer neither allows fan uploads nor lends its code."""
+    store_spotify_decision(state, spotify, stored_title)
+    if spotify == "exact":
+        with state._get_connection() as conn:
+            conn.execute("UPDATE matched_tracks SET matched_isrc = 'GBCFB1700231'")
+    engine = SyncEngine(settings_beside(state), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=FakeFinder({}))
+    source = engine._to_source(discogs_track(), Release(1, "Release", "Bicep", 2017, 1, "Folder"), "soundcloud")
+    assert (source.fan_uploads, set(source.isrcs)) == (fan_uploads, isrcs)
 
 
 class FakeSoundCloud(FakeSpotify):
@@ -480,10 +551,43 @@ def run_soundcloud(state, soundcloud, gated: bool, tracks=None):
     Returns:
         The result.
     """
-    settings = Settings(_env_file=None, soundcloud_gated_tracks=gated)
+    settings = settings_beside(state, soundcloud_gated_tracks=gated)
     discogs = FakeDiscogs({"House": tracks or [discogs_track()]})
     engine = SyncEngine(settings, discogs, state, Console(quiet=True))
     return engine.sync_to_soundcloud(soundcloud, include_wantlist=False)
+
+
+@pytest.mark.parametrize(
+    ("spotify", "codes", "upload_code", "playlist"),
+    [
+        ("unknown", {}, None, []),
+        ("missing", {}, None, ["7"]),
+        ("other_mix", {}, None, ["7"]),
+        ("original", {}, None, ["7"]),
+        ("exact", {}, None, []),
+        ("unknown", {"GBCFB1700231": 300_000}, None, []),
+        ("missing", {"GBCFB1700231": 300_000}, None, []),
+        ("unknown", {"GBCFB1700231": 300_000}, "GBCFB1700231", ["7"]),
+        ("exact", {"GBCFB1700231": 300_000}, "GBCFB1700231", ["7"]),
+    ],
+)
+def test_vinyl_rip_by_a_stranger_waits_until_spotify_was_asked(state, spotify, codes, upload_code, playlist):
+    """A SoundCloud run that reaches a track before Spotify did takes no fan upload, only one proven by its code."""
+    store_spotify_decision(state, spotify)
+    rip = {
+        "id": 7,
+        "title": "Bicep - Glue",
+        "user": {"username": "Vinyl Digger"},
+        "duration": 301_000,
+        "access": "playable",
+        "isrc": upload_code,
+    }
+    soundcloud = FakeSoundCloud([rip])
+    discogs = FakeDiscogs({"House": [replace(discogs_track(), duration="5:00")]})
+    engine = SyncEngine(settings_beside(state), discogs, state, Console(quiet=True), isrc_finder=FakeFinder(codes))
+    result = engine.sync_to_soundcloud(soundcloud, include_wantlist=False)
+    assert soundcloud.playlists.get("Discogs - House", []) == playlist
+    assert result.tracks_missing == (0 if playlist else 1)
 
 
 @pytest.mark.parametrize(
@@ -611,7 +715,7 @@ def test_spotify_code_joins_the_catalogue_codes(state, destination, stored, foun
             match_tier="exact", matched_duration_ms=stored[1], matched_isrc=stored[0],
         )
     finder = FakeFinder(found) if has_finder else None
-    engine = SyncEngine(Settings(_env_file=None), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
+    engine = SyncEngine(settings_beside(state), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
     source = engine._to_source(track, Release(1, "Release", "Cat Stevens", 1970, 1, "Folder"), destination)
     assert dict(source.isrcs) == isrcs
     assert source.fan_uploads is not bool(stored or found)

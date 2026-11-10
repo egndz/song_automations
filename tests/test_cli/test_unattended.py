@@ -215,6 +215,47 @@ class TestOwnerAlert:
         assert result.exit_code == 2
         assert len(alerts) == expected
 
+    @pytest.mark.parametrize(
+        ("call", "unattended", "told"),
+        [
+            ("positional", True, 1),
+            ("keyword", True, 1),
+            ("positional", False, 0),
+            ("keyword", False, 0),
+        ],
+    )
+    def test_owner_is_told_however_the_settings_are_passed(
+        self, make_settings, monkeypatch, alerts, call, unattended, told
+    ):
+        """A sync started with its settings by keyword notifies the owner like any other."""
+        settings = make_settings(unattended=unattended)
+        received = []
+
+        def run_sync(run_settings, platform, *args, **kwargs):
+            """Stands in for a sync that needs a login.
+
+            Args:
+                run_settings: Settings of the run.
+                platform: Platform to sync.
+                *args: Ignored.
+                **kwargs: Ignored.
+
+            Raises:
+                ReauthRequiredError: Always.
+            """
+            received.append((run_settings, platform))
+            raise ReauthRequiredError("Spotify")
+
+        monkeypatch.setattr(cli, "_run_sync", run_sync)
+        with pytest.raises(typer.Exit) as stopped:
+            if call == "keyword":
+                cli._guarded_sync(settings=settings, platform="spotify")
+            else:
+                cli._guarded_sync(settings, "spotify")
+        assert stopped.value.exit_code == 2
+        assert received == [(settings, "spotify")]
+        assert len(alerts) == told
+
     @pytest.mark.parametrize("error", [ReauthRequiredError("Spotify"), RateLimitedError("Spotify", 60)])
     def test_missing_settings_mean_nobody_is_told(self, alerts, error):
         """A command that passes no settings never posts a notification."""

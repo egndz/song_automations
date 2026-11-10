@@ -1,7 +1,11 @@
 """Tests for how the resolver spends requests and what it does with refusals."""
 
+import re
+from pathlib import Path
+
 import pytest
 
+from song_automations.matching import resolver
 from song_automations.matching.matcher import SourceTrack, Tier
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
@@ -441,3 +445,15 @@ def test_upload_without_an_account_name_is_not_offered(route, user, expected):
     source = SourceTrack(("Bicep",), "Glue", duration_ms=300_000, fan_uploads=False)
     [match] = resolve_release(searcher, [source], ["Bicep"], "Bicep", "Isles")
     assert (match.candidate.id if match else None) == expected
+
+
+SOURCE_TEXT = "\n".join(path.read_text() for path in Path(resolver.__file__).parents[1].rglob("*.py"))
+
+
+@pytest.mark.parametrize(
+    "name",
+    sorted(name for name, value in vars(resolver).items() if name.isupper() and isinstance(value, int | str)),
+)
+def test_every_resolver_constant_is_used(name):
+    """A constant of the resolver is read somewhere besides the line that defines it."""
+    assert len(re.findall(rf"\b{name}\b", SOURCE_TEXT)) > 1

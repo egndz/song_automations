@@ -2,7 +2,6 @@
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,7 +21,7 @@ from song_automations.errors import (
     ReauthRequiredError,
     SearchBudgetExhaustedError,
 )
-from song_automations.matching.isrc import IsrcFinder
+from song_automations.matching.isrc import IsrcFinder, with_recording_evidence
 from song_automations.matching.matcher import Match, SourceTrack, decide
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
@@ -468,14 +467,27 @@ def create_app(
         return RedirectResponse(url="/", status_code=303)
 
     @app.post("/approve-all")
-    async def approve_all(destination: str | None = None):
-        """Approve all currently displayed tracks."""
+    async def approve_all(destination: str | None = None, track_ids: list[int] = Form(default=[])):
+        """Approves the matches the page was showing when the button was pressed.
+
+        Only the posted ids are approved, and only while they are still
+        flagged, so matches on other pages or added since are never approved
+        unseen.
+
+        Args:
+            destination: Platform filter the page was using.
+            track_ids: Ids of the matches shown on the page.
+
+        Returns:
+            Redirect to the review page.
+        """
+        shown = set(track_ids)
         flagged = tracker.get_flagged_tracks(
             high_confidence=settings.high_confidence,
             destination=destination,
         )
         for track in flagged:
-            if track.id:
+            if track.id in shown:
                 tracker.update_review_status(track.id, "approved")
         return RedirectResponse(url="/", status_code=303)
 
@@ -520,7 +532,8 @@ def create_app(
             HTTPException: If the track is unknown, or Discogs or the platform
                 client cannot be used.
             RateLimitedError: When the platform asks for a long wait.
-            ReauthRequiredError: When the platform login has expired.
+            ReauthRequiredError: When the platform login has expired, also
+                when that shows while the platform client is being built.
             SearchBudgetExhaustedError: When the app has used its searches.
         """
         track = tracker.get_matched_track_by_id(track_id)
@@ -534,17 +547,21 @@ def create_app(
 
         try:
             searcher = get_searcher(track.destination)
+        except (RateLimitedError, ReauthRequiredError, SearchBudgetExhaustedError):
+            raise
         except Exception as error:
             raise HTTPException(status_code=500, detail=f"Failed to initialize client: {error}") from error
 
         source, artist = build_source(track, tracks)
-        isrcs: dict[str, int | None] = {}
-        if track.destination == "soundcloud":
-            isrcs = finder.find(source, artist)
-        released = bool(isrcs) or tracker.has_exact_spotify_match(
-            track.discogs_release_id, track.discogs_track_position
+        source = with_recording_evidence(
+            source,
+            artist,
+            track.destination,
+            track.discogs_release_id,
+            track.discogs_track_position,
+            tracker,
+            finder,
         )
-        source = replace(source, isrcs=isrcs, fan_uploads=not released)
 
         queries = alternative_queries(searcher, artist, source.title)
         refused = tracker.get_rejected_ids(

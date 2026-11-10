@@ -3,7 +3,7 @@
 import re
 import traceback
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
@@ -15,8 +15,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from song_automations.clients.discogs import DiscogsClient, Folder, Release, Track
 from song_automations.config import Settings
-from song_automations.matching.isrc import IsrcFinder
-from song_automations.matching.matcher import PLAYABLE, Match, SourceTrack, Tier, normalize_isrc
+from song_automations.matching.isrc import IsrcFinder, with_recording_evidence
+from song_automations.matching.matcher import PLAYABLE, Match, SourceTrack, Tier
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
     SpotifySearcher,
@@ -630,7 +630,8 @@ class SyncEngine:
         the official upload is recognised whatever its account is called. The
         code of an exact Spotify match counts too, which covers tracks the
         catalogue lacks. Fan uploads are allowed only for tracks no catalogue
-        carries, which keeps covers out.
+        carries, which keeps covers out, and only once Spotify has been asked
+        about the track.
 
         Args:
             track: Discogs track.
@@ -648,16 +649,15 @@ class SyncEngine:
             labels=track.labels,
             remixers=track.remixers,
         )
-        isrcs: dict[str, int | None] = {}
-        if destination == "soundcloud":
-            carried = self._state.get_exact_spotify_recording(release.id, track.position, track.title)
-            code = normalize_isrc(carried[0]) if carried else ""
-            if code:
-                isrcs[code] = carried[1]
-            if self._isrc_finder is not None:
-                isrcs.update(self._isrc_finder.find(source, _first_artist(track)))
-        released = bool(isrcs) or self._state.has_exact_spotify_match(release.id, track.position)
-        return replace(source, isrcs=isrcs, fan_uploads=not released)
+        return with_recording_evidence(
+            source,
+            _first_artist(track),
+            destination,
+            release.id,
+            track.position,
+            self._state,
+            self._isrc_finder,
+        )
 
     def _save_decision(
         self,

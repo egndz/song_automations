@@ -24,11 +24,12 @@ class Settings(BaseSettings):
         want_playlist_name: Playlist whose tracks go on the Discogs wantlist.
         playlist_prefix: Prefix for created playlists.
         soundcloud_gated_tracks: Whether SoundCloud tracks the account cannot play in full may match.
-        spotify_search_budget: Spotify searches one run may make.
+        spotify_search_budget: Spotify searches allowed in any 24 hours.
         login_wait_seconds: Seconds to wait for a login page to be approved in the browser.
         snapshot_runs_kept: Newest runs whose playlist snapshots are kept.
         unattended: Whether nobody is there to approve a login page, so none may be opened.
-        high_confidence: Threshold for high confidence matches (auto-add).
+        high_confidence: Confidence below which the review page lists a match even when it
+            is the exact version. Matches of another version are always listed.
         log_level: Logging level for file output.
     """
 
@@ -92,7 +93,7 @@ class Settings(BaseSettings):
     spotify_search_budget: int = Field(
         default=400,
         ge=1,
-        description="Spotify searches one run may make; development mode apps are blocked for a day after about 900",
+        description="Spotify searches allowed in any 24 hours, across runs; development mode apps are blocked for a day after about 900",
     )
     login_wait_seconds: int = Field(
         default=600,
@@ -112,7 +113,7 @@ class Settings(BaseSettings):
         default=0.50,
         ge=0.0,
         le=1.0,
-        description="High confidence threshold (auto-add)",
+        description="The review page lists exact matches below this confidence; other versions are always listed",
     )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
         default="INFO",
