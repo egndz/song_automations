@@ -30,6 +30,7 @@ BOOTSTRAP_PAUSE_SECONDS = 1.0
 TIME_PATTERN = re.compile(r"^(\d{1,2}):(\d{2})$")
 EXIT_CODE_PATTERN = re.compile(r"last exit code = (-?\d+)")
 RUNNING_PATTERN = re.compile(r"^\s*state = running\s*$", re.MULTILINE)
+RUN_ENVIRONMENT = {"PYTHONUNBUFFERED": "1", "_TYPER_STANDARD_TRACEBACK": "1"}
 EXIT_CODE_MEANINGS = {
     0: "finished, or stopped normally after using its searches",
     2: "stopped because a login is needed or a platform rate limited the app",
@@ -181,6 +182,10 @@ def build_plist(
 ) -> dict:
     """Describes the daily run the way launchd wants it.
 
+    The run prints as it goes, and a crash is logged as a plain traceback,
+    which never lists the values of variables and so keeps secrets out of
+    the log.
+
     Args:
         python: Path of the Python interpreter that has the tool installed.
         target: all, spotify or soundcloud.
@@ -199,7 +204,7 @@ def build_plist(
         "WorkingDirectory": str(working_dir),
         "StandardOutPath": str(log),
         "StandardErrorPath": str(log),
-        "EnvironmentVariables": {"PYTHONUNBUFFERED": "1"},
+        "EnvironmentVariables": dict(RUN_ENVIRONMENT),
         "RunAtLoad": False,
     }
 
@@ -225,10 +230,11 @@ def crontab_line(
     Returns:
         One line for crontab -e.
     """
+    environment = " ".join(f"{name}={value}" for name, value in RUN_ENVIRONMENT.items())
     command = " ".join(shlex.quote(part) for part in sync_command(python, target))
     return (
         f"{minute} {hour} * * * cd {shlex.quote(str(working_dir))} && "
-        f"{command} >> {shlex.quote(str(log))} 2>&1"
+        f"{environment} {command} >> {shlex.quote(str(log))} 2>&1"
     )
 
 

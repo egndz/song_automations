@@ -192,6 +192,10 @@ class TestPureParts:
         assert content["WorkingDirectory"] == str(tmp_path)
         assert content["StandardOutPath"] == content["StandardErrorPath"] == str(log)
         assert content["RunAtLoad"] is False
+        assert content["EnvironmentVariables"] == {
+            "PYTHONUNBUFFERED": "1",
+            "_TYPER_STANDARD_TRACEBACK": "1",
+        }
         assert plistlib.loads(plistlib.dumps(content)) == content
 
     @pytest.mark.parametrize(
@@ -202,7 +206,8 @@ class TestPureParts:
                 "all",
                 4,
                 30,
-                "30 4 * * * cd /home/me/songs && /opt/tool/env/bin/python -m song_automations "
+                "30 4 * * * cd /home/me/songs && PYTHONUNBUFFERED=1 _TYPER_STANDARD_TRACEBACK=1 "
+                "/opt/tool/env/bin/python -m song_automations "
                 "--unattended sync all >> /data/logs/scheduled-sync.log 2>&1",
             ),
             (
@@ -210,7 +215,8 @@ class TestPureParts:
                 "spotify",
                 23,
                 5,
-                "5 23 * * * cd '/home/me/my songs' && /opt/tool/env/bin/python -m song_automations "
+                "5 23 * * * cd '/home/me/my songs' && PYTHONUNBUFFERED=1 _TYPER_STANDARD_TRACEBACK=1 "
+                "/opt/tool/env/bin/python -m song_automations "
                 "--unattended sync spotify >> /data/logs/scheduled-sync.log 2>&1",
             ),
         ],
