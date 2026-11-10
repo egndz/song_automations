@@ -1,0 +1,87 @@
+name: Refresh seller radio crate
+
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+    inputs:
+      enrich_limit:
+        description: Maximum releases to enrich in this run
+        required: false
+        default: "2000"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-crate
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: seller-radio
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    env:
+      DISCOGS_TOKEN: ${{ secrets.DISCOGS_TOKEN }}
+      DISCOGS_USERNAME: ${{ vars.DISCOGS_USERNAME }}
+      ENRICH_LIMIT: ${{ inputs.enrich_limit || '2000' }}
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Install the package
+        run: pip install --disable-pip-version-check -e .
+
+      - name: Fail early when the token secret is missing
+        run: |
+          if [ -z "$DISCOGS_TOKEN" ]; then
+            echo "The DISCOGS_TOKEN repository secret is not set." >&2
+            exit 1
+          fi
+
+      - name: Restore the crawl state
+        uses: actions/cache@v4.2.0
+        with:
+          path: seller-radio/crate.db*
+          key: crate-db-${{ github.run_id }}
+          restore-keys: |
+            crate-db-
+
+      - name: Sync the collection and the wantlist
+        run: python -m radio owned
+
+      - name: Sync the seller inventories
+        run: python -m radio sync
+
+      - name: Enrich pooled releases
+        run: python -m radio enrich --limit "$ENRICH_LIMIT"
+
+      - name: Export the crate
+        run: python -m radio export
+
+      - name: Report the crate statistics
+        run: python -m radio stats
+
+      - name: Commit the crate when it changed
+        run: |
+          git add --intent-to-add web/crate.js
+          if git diff --quiet -- web/crate.js; then
+            echo "web/crate.js is unchanged, nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add web/crate.js
+          git commit -m "chore: refresh seller radio crate"
+          git push

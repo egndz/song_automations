@@ -1,0 +1,7 @@
+crate.db
+crate.db-wal
+crate.db-shm
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
