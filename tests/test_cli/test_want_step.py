@@ -251,7 +251,7 @@ class TestSharedErrorMessages:
         monkeypatch.setattr("song_automations.errors.datetime", FixedClock)
         monkeypatch.setattr(cli, "_run_sync", run_sync)
         with pytest.raises(typer.Exit) as stopped:
-            cli._guarded_sync()
+            cli._guarded_sync(make_settings())
         from_sync = flat(capsys.readouterr().out)
         result, _ = self._want_sync(
             monkeypatch, make_settings(), ["--platform", "spotify"], {"spotify": error}

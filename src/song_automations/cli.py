@@ -336,11 +336,15 @@ def login(
         raise typer.Exit(exit_code)
 
 
-def _guarded_sync(*args, **kwargs) -> SyncResult:
+def _guarded_sync(settings: Settings, *args, **kwargs) -> SyncResult:
     """Runs a sync and turns limits and expired logins into a plain message.
 
+    The settings are named, so the owner of an unattended run is told about a
+    stop however the caller passes them.
+
     Args:
-        *args: Passed to _run_sync, the settings first.
+        settings: Settings of the run, which also say whether to notify the owner.
+        *args: Passed to _run_sync after the settings.
         **kwargs: Passed to _run_sync.
 
     Returns:
@@ -349,8 +353,8 @@ def _guarded_sync(*args, **kwargs) -> SyncResult:
     Raises:
         typer.Exit: When the platform refuses the run.
     """
-    with _friendly_errors(args[0] if args else None):
-        return _run_sync(*args, **kwargs)
+    with _friendly_errors(settings):
+        return _run_sync(settings, *args, **kwargs)
 
 
 def version_callback(value: bool) -> None:
