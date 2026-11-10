@@ -967,8 +967,9 @@ class TestSpotifyRecordingCode:
         """Another mix, another platform or a match without a code gives nothing to carry over."""
         tracker = StateTracker(tmp_path / "state.db")
         self._save(tracker, destination, tier, code, length)
-        assert tracker.get_exact_spotify_recording(1, "A1") == expected
-        assert tracker.get_exact_spotify_recording(1, "B1") is None
+        assert tracker.get_exact_spotify_recording(1, "A1", "Glue") == expected
+        assert tracker.get_exact_spotify_recording(1, "B1", "Glue") is None
+        assert tracker.get_exact_spotify_recording(1, "A1", "Opal") is None
 
     @pytest.mark.parametrize(
         ("status", "expected"),
@@ -978,7 +979,7 @@ class TestSpotifyRecordingCode:
         """The code of a match a person refused is not carried over."""
         tracker = StateTracker(tmp_path / "state.db")
         tracker.update_review_status(self._save(tracker), status)
-        assert tracker.get_exact_spotify_recording(1, "A1") == expected
+        assert tracker.get_exact_spotify_recording(1, "A1", "Glue") == expected
 
     @pytest.mark.parametrize(("corrected", "expected"), [(False, ("GBCFB1700231", 269_000)), (True, None)])
     def test_corrected_match_drops_the_code_of_the_old_track(self, tmp_path, corrected, expected):
@@ -987,7 +988,7 @@ class TestSpotifyRecordingCode:
         row_id = self._save(tracker)
         if corrected:
             tracker.update_matched_track(row_id, "sp2", 1.0)
-        assert tracker.get_exact_spotify_recording(1, "A1") == expected
+        assert tracker.get_exact_spotify_recording(1, "A1", "Glue") == expected
 
     @pytest.mark.parametrize("column", ["matched_isrc", "matched_duration_ms"])
     def test_missing_column_is_added_to_an_existing_database(self, tmp_path, column):
@@ -999,5 +1000,97 @@ class TestSpotifyRecordingCode:
             conn.execute(f"ALTER TABLE matched_tracks DROP COLUMN {column}")
         reopened = StateTracker(path)
         self._save(reopened)
-        assert reopened.get_exact_spotify_recording(1, "A1") == ("GBCFB1700231", 269_000)
+        assert reopened.get_exact_spotify_recording(1, "A1", "Glue") == ("GBCFB1700231", 269_000)
         assert reopened.get_cached_match(2, "B1", "spotify").destination_track_id == "sp9"
+
+
+class TestCacheExpiry:
+    """Which stored rows expire, and which are kept for good."""
+
+    @staticmethod
+    def _age(tracker, table, column, days):
+        """Moves every row of a table into the past.
+
+        Args:
+            tracker: State tracker.
+            table: Table name.
+            column: Timestamp column.
+            days: How many days old the rows become.
+        """
+        with tracker._get_connection() as conn:
+            conn.execute(f"UPDATE {table} SET {column} = datetime('now', ?)", (f"-{days} days",))
+
+    @staticmethod
+    def _set_status(tracker, status):
+        """Writes a review status straight into the stored match.
+
+        Args:
+            tracker: State tracker.
+            status: Review status, None for a row that never had one.
+        """
+        with tracker._get_connection() as conn:
+            conn.execute("UPDATE matched_tracks SET review_status = ?", (status,))
+
+    @pytest.mark.parametrize(
+        ("status", "age_days", "kept"),
+        [
+            ("pending", 1, True),
+            ("pending", 31, False),
+            (None, 31, False),
+            ("", 31, False),
+            ("approved", 1, True),
+            ("approved", 31, True),
+            ("approved", 4000, True),
+            ("manual", 400, True),
+            ("rejected", 1, False),
+            ("rejected", 400, False),
+        ],
+    )
+    def test_only_unreviewed_matches_expire(self, tmp_path, status, age_days, kept):
+        """A reviewed match is returned at any age, an unreviewed one for 30 days."""
+        tracker = StateTracker(tmp_path / "state.db")
+        tracker.save_matched_track(1, "A1", "x", "y", "spotify", "picked", 0.4)
+        self._set_status(tracker, status)
+        self._age(tracker, "matched_tracks", "searched_at", age_days)
+        match = tracker.get_cached_match(1, "A1", "spotify")
+        assert (match is not None) == kept
+        if kept:
+            assert match.destination_track_id == "picked"
+            assert match.review_status == (status or "pending")
+
+    @pytest.mark.parametrize("age_days", [31, 365])
+    def test_corrected_match_survives_a_later_sync(self, tmp_path, age_days):
+        """A hand-picked track is still the stored answer long after the review."""
+        tracker = StateTracker(tmp_path / "state.db")
+        tracker.save_matched_track(1, "A1", "x", "y", "soundcloud", "wrong", 0.4)
+        row_id = tracker.get_cached_match(1, "A1", "soundcloud").id
+        tracker.update_matched_track(row_id, "right", 1.0)
+        tracker.update_review_status(row_id, "approved")
+        self._age(tracker, "matched_tracks", "searched_at", age_days)
+        match = tracker.get_cached_match(1, "A1", "soundcloud")
+        assert (match.destination_track_id, match.review_status) == ("right", "approved")
+
+    @pytest.mark.parametrize(
+        ("age_days", "max_age_days", "deleted"),
+        [(1, 30, 0), (29, 30, 0), (31, 30, 1), (400, 30, 1), (8, 7, 1), (6, 7, 0)],
+    )
+    def test_old_search_responses_are_purged(self, tmp_path, age_days, max_age_days, deleted):
+        """Only responses too old to be read again are deleted."""
+        tracker = StateTracker(tmp_path / "state.db")
+        tracker.save_search_cache("spotify", "old", [{"id": 1}])
+        self._age(tracker, "search_cache", "fetched_at", age_days)
+        tracker.save_search_cache("spotify", "fresh", [{"id": 2}])
+        assert tracker.purge_search_cache(max_age_days) == deleted
+        with tracker._get_connection() as conn:
+            keys = {row[0] for row in conn.execute("SELECT query_key FROM search_cache")}
+        assert keys == ({"fresh"} if deleted else {"fresh", "old"})
+        assert tracker.get_search_cache("spotify", "fresh") == [{"id": 2}]
+
+    @pytest.mark.parametrize("age_days", [31, 90])
+    def test_purge_removes_exactly_what_reads_ignore(self, tmp_path, age_days):
+        """An entry the purge deletes was already unreadable, so no search result is lost."""
+        tracker = StateTracker(tmp_path / "state.db")
+        tracker.save_search_cache("soundcloud", "q", {"a": 1})
+        self._age(tracker, "search_cache", "fetched_at", age_days)
+        assert tracker.get_search_cache("soundcloud", "q") is None
+        assert tracker.purge_search_cache() == 1

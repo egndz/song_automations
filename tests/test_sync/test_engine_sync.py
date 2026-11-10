@@ -587,7 +587,7 @@ def test_recording_code_of_a_spotify_match_is_stored(state, external_ids, expect
     """The code Spotify lists is kept with the match, in one spelling, and nothing is kept when it lists none."""
     sync_katmandu_to_spotify(state, external_ids)
     assert state.get_cached_match(1, "A1", "spotify").destination_track_id == "sp1"
-    assert state.get_exact_spotify_recording(1, "A1") == expected
+    assert state.get_exact_spotify_recording(1, "A1", "Katmandu") == expected
 
 
 @pytest.mark.parametrize(

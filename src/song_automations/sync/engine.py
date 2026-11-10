@@ -633,7 +633,7 @@ class SyncEngine:
         )
         isrcs: dict[str, int | None] = {}
         if destination == "soundcloud":
-            carried = self._state.get_exact_spotify_recording(release.id, track.position)
+            carried = self._state.get_exact_spotify_recording(release.id, track.position, track.title)
             code = normalize_isrc(carried[0]) if carried else ""
             if code:
                 isrcs[code] = carried[1]

@@ -1,24 +1,55 @@
 """Spotify API client for playlist management and track search."""
 
+import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import spotipy
 from spotipy.exceptions import SpotifyException
-from spotipy.oauth2 import SpotifyOAuth, SpotifyOauthError
+from spotipy.oauth2 import (
+    SpotifyOAuth,
+    SpotifyOauthError,
+    SpotifyStateError,
+    start_local_http_server,
+)
 
 from song_automations.config import Settings
 from song_automations.errors import (
+    LoginFailedError,
+    LoginTimeoutError,
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
 )
 
+logger = logging.getLogger(__name__)
+
+PLATFORM = "Spotify"
+STALE_LOGIN_ERRORS = frozenset({"invalid_client", "invalid_grant"})
+STALE_SUFFIX = ".stale"
 PLAYLIST_CACHE_TTL = 300
 MAX_WAIT_SECONDS = 60
 MAX_ATTEMPTS = 5
 SEARCH_PAUSE_SECONDS = 0.5
 SEARCH_LIMIT = 10
+DEFAULT_RETRY_AFTER_SECONDS = 5
+
+
+def retry_after_seconds(headers: dict | None) -> int:
+    """Reads how long Spotify asks to wait, whatever shape the header has.
+
+    Args:
+        headers: Response headers, possibly missing.
+
+    Returns:
+        Seconds to wait, the default when the header is absent or not a number.
+    """
+    try:
+        seconds = int(float((headers or {}).get("Retry-After")))
+    except (TypeError, ValueError, OverflowError, AttributeError):
+        return DEFAULT_RETRY_AFTER_SECONDS
+    return max(seconds, 0)
 
 
 @dataclass
@@ -104,6 +135,53 @@ class SearchResult:
     is_verified: bool
 
 
+class TimedSpotifyOAuth(SpotifyOAuth):
+    """Spotify login that stops waiting for the browser after a set time.
+
+    spotipy waits for the approval for ever, which hangs a run nobody is watching.
+
+    Args:
+        wait_seconds: Seconds to wait for the approval.
+        **kwargs: Passed to SpotifyOAuth.
+    """
+
+    def __init__(self, wait_seconds: int, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._wait_seconds = wait_seconds
+
+    def _get_auth_response_local_server(self, redirect_port: int) -> str:
+        """Opens the approval page and waits for Spotify to send the browser back.
+
+        Args:
+            redirect_port: Local port the approval is sent to.
+
+        Returns:
+            The authorization code.
+
+        Raises:
+            LoginTimeoutError: When the page is not approved in time.
+            SpotifyOauthError: When Spotify answers with an error.
+        """
+        server = start_local_http_server(redirect_port)
+        deadline = time.monotonic() + self._wait_seconds
+        try:
+            self._open_auth_url()
+            while server.auth_code is None and server.error is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LoginTimeoutError(PLATFORM, self._wait_seconds)
+                server.timeout = remaining
+                server.handle_request()
+        finally:
+            server.server_close()
+        if server.error is not None:
+            raise server.error
+        received = getattr(server, "state", None)
+        if self.state is not None and received != self.state:
+            raise SpotifyStateError(self.state, received)
+        return server.auth_code
+
+
 class SpotifyClient:
     """Client for interacting with the Spotify API.
 
@@ -121,19 +199,20 @@ class SpotifyClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
-        cache_path = settings.data_dir / ".spotify_cache"
+        self._cache_path = settings.data_dir / ".spotify_cache"
         settings.data_dir.mkdir(parents=True, exist_ok=True)
 
-        auth_manager = SpotifyOAuth(
+        self._auth = TimedSpotifyOAuth(
+            wait_seconds=settings.login_wait_seconds,
             client_id=settings.spotify_client_id,
             client_secret=settings.spotify_client_secret,
             redirect_uri=settings.spotify_redirect_uri,
             scope=" ".join(self.SCOPES),
-            cache_path=str(cache_path),
+            cache_path=str(self._cache_path),
             open_browser=True,
         )
         self._client = spotipy.Spotify(
-            auth_manager=auth_manager,
+            auth_manager=self._auth,
             retries=0,
             status_retries=0,
             requests_timeout=20,
@@ -151,7 +230,85 @@ class SpotifyClient:
             self._user_id = self._call(self._client.current_user)["id"]
         return self._user_id
 
+    def login(self) -> None:
+        """Opens the Spotify approval page in the browser and waits for the approval.
+
+        The saved login is not consulted, so one that stopped working is replaced.
+
+        Raises:
+            LoginTimeoutError: When the page is not approved in time.
+            LoginFailedError: When Spotify refuses the login.
+        """
+        try:
+            self._auth.get_access_token(as_dict=False, check_cache=False)
+        except (SpotifyOauthError, OSError) as error:
+            raise LoginFailedError(PLATFORM, str(error)) from error
+        if self._cache_path.exists():
+            self._cache_path.chmod(0o600)
+        self._user_id = None
+
+    def _set_login_aside(self) -> Path | None:
+        """Renames the saved login so that it is no longer used but not lost.
+
+        Returns:
+            Where the saved login went, or None when there was none.
+        """
+        if not self._cache_path.exists():
+            return None
+        stale = self._cache_path.with_name(self._cache_path.name + STALE_SUFFIX)
+        self._cache_path.replace(stale)
+        stale.chmod(0o600)
+        return stale
+
+    def _replace_stale_login(self, error: SpotifyOauthError) -> None:
+        """Sets a saved login that Spotify refuses aside and asks for a new one.
+
+        A login saved for another Spotify app, or one whose approval was
+        withdrawn, fails on every refresh until the saved file is gone.
+
+        Args:
+            error: The refusal.
+
+        Raises:
+            LoginTimeoutError: When the page is not approved in time.
+            LoginFailedError: When Spotify refuses the new login.
+        """
+        stale = self._set_login_aside()
+        logger.warning(
+            "Spotify refused the saved login (%s). It was moved to %s and the Spotify "
+            "approval page is opening in your browser.",
+            error.error,
+            stale,
+        )
+        self.login()
+
     def _call(self, method, *args, **kwargs):
+        """Calls Spotify and replaces a saved login that Spotify no longer accepts.
+
+        Args:
+            method: Bound spotipy method.
+            *args: Positional arguments.
+            **kwargs: Keyword arguments.
+
+        Returns:
+            The response.
+
+        Raises:
+            RateLimitedError: When Spotify asks for a long wait.
+            ReauthRequiredError: When the login cannot be refreshed or replaced.
+        """
+        try:
+            return self._call_with_retries(method, *args, **kwargs)
+        except SpotifyOauthError as error:
+            if error.error not in STALE_LOGIN_ERRORS:
+                raise ReauthRequiredError(PLATFORM) from error
+            self._replace_stale_login(error)
+        try:
+            return self._call_with_retries(method, *args, **kwargs)
+        except SpotifyOauthError as error:
+            raise ReauthRequiredError(PLATFORM) from error
+
+    def _call_with_retries(self, method, *args, **kwargs):
         """Calls Spotify, waiting out short limits and refusing to wait out long ones.
 
         spotipy would otherwise honor any Retry-After silently, and Spotify can
@@ -167,19 +324,17 @@ class SpotifyClient:
 
         Raises:
             RateLimitedError: When Spotify asks for a long wait.
-            ReauthRequiredError: When the login can no longer be refreshed.
+            SpotifyOauthError: When the saved login is refused.
         """
         for attempt in range(MAX_ATTEMPTS):
             try:
                 return method(*args, **kwargs)
-            except SpotifyOauthError as error:
-                raise ReauthRequiredError("Spotify") from error
             except SpotifyException as error:
                 last_attempt = attempt == MAX_ATTEMPTS - 1
                 if error.http_status == 429:
-                    wait = int((error.headers or {}).get("Retry-After", 5))
+                    wait = retry_after_seconds(error.headers)
                     if wait > MAX_WAIT_SECONDS or last_attempt:
-                        raise RateLimitedError("Spotify", wait) from error
+                        raise RateLimitedError(PLATFORM, wait) from error
                     time.sleep(wait + 1)
                 elif error.http_status >= 500 and not last_attempt:
                     time.sleep(2**attempt)
@@ -221,7 +376,7 @@ class SpotifyClient:
             SearchBudgetExhaustedError: When the run has made all the searches it may make.
         """
         if self._searches >= self._search_budget:
-            raise SearchBudgetExhaustedError("Spotify", self._search_budget)
+            raise SearchBudgetExhaustedError(PLATFORM, self._search_budget)
         self._searches += 1
         pause = SEARCH_PAUSE_SECONDS - (time.monotonic() - self._last_search)
         if pause > 0:
