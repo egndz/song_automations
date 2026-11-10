@@ -1094,3 +1094,84 @@ class TestCacheExpiry:
         self._age(tracker, "search_cache", "fetched_at", age_days)
         assert tracker.get_search_cache("soundcloud", "q") is None
         assert tracker.purge_search_cache() == 1
+
+
+class TestFlaggedTracks:
+    """Which stored matches the review page lists."""
+
+    @staticmethod
+    def _save(tracker, position, destination="spotify", track_id="t", confidence=0.7, tier="original"):
+        """Stores one match of release 1.
+
+        Args:
+            tracker: Tracker.
+            position: Track position, which tells the rows apart.
+            destination: Platform of the match.
+            track_id: Platform track id, None for a track that was not found.
+            confidence: Match confidence.
+            tier: Version tier, None for a row from before tiers were stored.
+
+        Returns:
+            Database row id of the match.
+        """
+        tracker.save_matched_track(1, position, "Bicep", "Glue", destination, track_id, confidence, match_tier=tier)
+        with tracker._get_connection() as conn:
+            return conn.execute(
+                "SELECT id FROM matched_tracks WHERE discogs_track_position = ? AND destination = ?",
+                (position, destination),
+            ).fetchone()[0]
+
+    @pytest.mark.parametrize(
+        ("tier", "confidence", "track_id", "listed"),
+        [
+            ("other_mix", 0.45, "t", True),
+            ("other_mix", 0.7, "t", True),
+            ("original", 0.6, "t", True),
+            ("original", 0.85, "t", True),
+            ("exact", 0.75, "t", False),
+            ("exact", 1.0, "t", False),
+            ("exact", 0.49, "t", True),
+            ("exact", 0.5, "t", False),
+            (None, 0.9, "t", False),
+            (None, 0.3, "t", True),
+            ("gated", 0.0, None, False),
+            (None, 0.0, None, False),
+        ],
+    )
+    def test_everything_a_sync_flags_is_listed(self, tmp_path, tier, confidence, track_id, listed):
+        """Another version is listed whatever its confidence, an exact match only below the threshold."""
+        tracker = StateTracker(tmp_path / "state.db")
+        self._save(tracker, "A1", track_id=track_id, confidence=confidence, tier=tier)
+        flagged = tracker.get_flagged_tracks(high_confidence=0.5)
+        assert [(row.match_tier, row.match_confidence) for row in flagged] == ([(tier, confidence)] if listed else [])
+
+    @pytest.mark.parametrize(
+        ("status", "listed"),
+        [(None, True), ("pending", True), ("approved", False), ("rejected", False)],
+    )
+    def test_reviewed_matches_leave_the_list(self, tmp_path, status, listed):
+        """A match a person approved or refused is not listed again."""
+        tracker = StateTracker(tmp_path / "state.db")
+        row_id = self._save(tracker, "A1")
+        if status:
+            tracker.update_review_status(row_id, status)
+        assert [row.id for row in tracker.get_flagged_tracks()] == ([row_id] if listed else [])
+
+    @pytest.mark.parametrize(
+        ("destination", "expected"),
+        [
+            (None, [("B1", "soundcloud"), ("A2", "spotify"), ("A1", "spotify"), ("B2", "soundcloud")]),
+            ("spotify", [("A2", "spotify"), ("A1", "spotify")]),
+            ("soundcloud", [("B1", "soundcloud"), ("B2", "soundcloud")]),
+        ],
+    )
+    def test_weakest_match_comes_first(self, tmp_path, destination, expected):
+        """The list is ordered by confidence, lowest first, and can be limited to one platform."""
+        tracker = StateTracker(tmp_path / "state.db")
+        self._save(tracker, "A1", "spotify", confidence=0.7, tier="original")
+        self._save(tracker, "A2", "spotify", confidence=0.55, tier="other_mix")
+        self._save(tracker, "A3", "spotify", confidence=0.95, tier="exact")
+        self._save(tracker, "B1", "soundcloud", confidence=0.45, tier="other_mix")
+        self._save(tracker, "B2", "soundcloud", confidence=0.8, tier="original")
+        flagged = tracker.get_flagged_tracks(destination=destination)
+        assert [(row.discogs_track_position, row.destination) for row in flagged] == expected

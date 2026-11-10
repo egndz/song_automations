@@ -27,7 +27,8 @@ class Settings(BaseSettings):
         spotify_search_budget: Spotify searches one run may make.
         login_wait_seconds: Seconds to wait for a login page to be approved in the browser.
         unattended: Whether nobody is there to approve a login page, so none may be opened.
-        high_confidence: Threshold for high confidence matches (auto-add).
+        high_confidence: Confidence below which the review page lists a match even when it
+            is the exact version. Matches of another version are always listed.
         log_level: Logging level for file output.
     """
 
@@ -106,7 +107,7 @@ class Settings(BaseSettings):
         default=0.50,
         ge=0.0,
         le=1.0,
-        description="High confidence threshold (auto-add)",
+        description="The review page lists exact matches below this confidence; other versions are always listed",
     )
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(
         default="INFO",

@@ -499,3 +499,28 @@ def test_soundcloud_alternatives_use_the_code_of_the_spotify_match(
     )
     body = review.alternatives(review.add(destination="soundcloud", matched="7")).json()
     assert [(entry["track_id"], entry["tier"]) for entry in body["alternatives"]] == expected
+
+
+@pytest.mark.parametrize(
+    ("tier", "confidence", "label"),
+    [
+        ("other_mix", 0.45, "Another mix of the song"),
+        ("other_mix", 0.7, "Another mix of the song"),
+        ("original", 0.85, "Original mix, not the listed version"),
+        ("exact", 0.4, None),
+        ("exact", 0.95, None),
+    ],
+)
+def test_review_page_lists_what_a_sync_flags(tmp_path, tier, confidence, label):
+    """A match of another version is listed and named whatever its confidence, and approve all clears it."""
+    review = Review(tmp_path)
+    review.state.save_matched_track(1, "A1", "Bicep", "Glue", "spotify", "t1", confidence, tier)
+    listed = tier != "exact" or confidence < review.settings.high_confidence
+    page = review.client.get("/").text
+    assert ("Searching for: <strong>Bicep - Glue</strong>" in page) == listed
+    assert ("No tracks need review" in page) != listed
+    labels = ("Another mix of the song", "Original mix, not the listed version")
+    assert [text for text in labels if text in page] == ([label] if label else [])
+    assert review.client.post("/approve-all", follow_redirects=False).status_code == 303
+    assert review.state.get_cached_match(1, "A1", "spotify").review_status == ("approved" if listed else "pending")
+    assert "No tracks need review" in review.client.get("/").text

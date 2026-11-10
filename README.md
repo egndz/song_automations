@@ -217,7 +217,7 @@ A gated track shows a 30 second clip instead of its length. When Discogs lists a
 
 Spotify apps in development mode are blocked for about a day after roughly 900 requests. One run makes at most 400 searches (`SPOTIFY_SEARCH_BUDGET`). When the budget is used up the run stops cleanly, finished folders are synced and every search is saved, so the next run carries on from there. If Spotify blocks the app anyway, the sync says until when and leaves unfinished folders alone.
 
-Tracks that are not found are retried after a week. A match you approved or corrected in the review tool is kept for good and never searched again. Saved search responses older than 30 days are deleted at the start of each sync. Run `song-automations report matches` to get a CSV of every match with its tier, so you can check substitutions and missing tracks.
+Tracks that are not found are retried after a week. A match you approved or corrected in the review tool is kept for good and never searched again. Saved search responses older than 30 days are deleted at the start of each sync. Run `song-automations report matches` to get a CSV of every match with its tier, so you can check substitutions and missing tracks. `song-automations review` opens a local page that lists the same matches a sync flags, which is every match that is not the exact version and that you have not approved or refused yet, weakest first.
 
 ## Development
 

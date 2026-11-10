@@ -988,26 +988,34 @@ class StateTracker:
         high_confidence: float = 0.50,
         destination: Destination | None = None,
     ) -> list[MatchedTrack]:
-        """Get tracks that need review (confidence below threshold, not yet reviewed).
+        """Lists the matches a person should look at, weakest first.
+
+        A match is listed when nobody reviewed it yet and a sync flags it,
+        which is when its tier is not exact (the original mix or another mix
+        stands in for the listed version). A row without a tier counts as
+        exact, as it does in a sync. An exact match is listed as well when its
+        confidence is below the threshold.
 
         Args:
-            high_confidence: Threshold below which tracks are flagged.
+            high_confidence: Confidence below which an exact match is listed too.
             destination: Optional filter by destination.
 
         Returns:
-            List of MatchedTrack objects needing review.
+            The matches needing review, lowest confidence first.
         """
         with self._get_connection() as conn:
             if destination:
                 rows = conn.execute(
                     """
                     SELECT * FROM matched_tracks
-                    WHERE match_confidence < ?
-                    AND match_confidence > 0
+                    WHERE (
+                        COALESCE(match_tier, 'exact') != 'exact'
+                        OR (match_confidence < ? AND match_confidence > 0)
+                    )
                     AND destination_track_id IS NOT NULL
                     AND (review_status IS NULL OR review_status = 'pending')
                     AND destination = ?
-                    ORDER BY match_confidence ASC
+                    ORDER BY match_confidence ASC, id ASC
                     """,
                     (high_confidence, destination),
                 ).fetchall()
@@ -1015,11 +1023,13 @@ class StateTracker:
                 rows = conn.execute(
                     """
                     SELECT * FROM matched_tracks
-                    WHERE match_confidence < ?
-                    AND match_confidence > 0
+                    WHERE (
+                        COALESCE(match_tier, 'exact') != 'exact'
+                        OR (match_confidence < ? AND match_confidence > 0)
+                    )
                     AND destination_track_id IS NOT NULL
                     AND (review_status IS NULL OR review_status = 'pending')
-                    ORDER BY match_confidence ASC
+                    ORDER BY match_confidence ASC, id ASC
                     """,
                     (high_confidence,),
                 ).fetchall()
@@ -1036,6 +1046,7 @@ class StateTracker:
                     match_confidence=row["match_confidence"],
                     searched_at=datetime.fromisoformat(row["searched_at"]),
                     review_status=row["review_status"] or "pending",
+                    match_tier=row["match_tier"],
                 )
                 for row in rows
             ]
