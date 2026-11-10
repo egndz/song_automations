@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -24,6 +25,7 @@ from song_automations.errors import (
 )
 from song_automations.logging import setup_logging
 from song_automations.matching.isrc import IsrcFinder
+from song_automations.notify import notify_attention
 from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
 from song_automations.state.tracker import StateTracker
@@ -54,6 +56,7 @@ RUN_STOPPING_ERRORS = (
     typer.Exit,
     typer.Abort,
 )
+_cli_overrides: dict[str, bool] = {}
 
 
 def _init_settings(min_confidence: float | None = None) -> Settings:
@@ -69,7 +72,21 @@ def _init_settings(min_confidence: float | None = None) -> Settings:
     settings.ensure_directories()
     setup_logging(level=settings.log_level, log_file=settings.log_path)
 
+    if _cli_overrides.get("unattended"):
+        settings.unattended = True
+
     return settings
+
+
+def _alert_owner(settings: Settings | None, error: Exception) -> None:
+    """Posts a desktop notification when an unattended run needs its owner.
+
+    Args:
+        settings: Settings of the run, None when the command is always attended.
+        error: What stopped the run.
+    """
+    if settings is not None and settings.unattended:
+        notify_attention(error)
 
 
 def _run_sync(
@@ -186,11 +203,15 @@ def _run_want_step(settings, client, platform, discogs_client, state_tracker, dr
 
 
 @contextmanager
-def _friendly_errors() -> Iterator[None]:
+def _friendly_errors(settings: Settings | None = None) -> Iterator[None]:
     """Turns limits and expired logins into a plain message and an exit code.
 
     A used-up search budget is a normal stop and exits with 0. A rate limit or
-    a login that needs the browser exits with 2.
+    a login that needs the browser exits with 2, and an unattended run also
+    posts a desktop notification about it.
+
+    Args:
+        settings: Settings of the run, None when nobody has to be notified.
 
     Yields:
         Nothing, the guarded work runs inside the with block.
@@ -205,10 +226,12 @@ def _friendly_errors() -> Iterator[None]:
         raise typer.Exit(0) from error
     except (RateLimitedError, ReauthRequiredError) as error:
         console.print(f"[red]{error}[/red]")
+        _alert_owner(settings, error)
         raise typer.Exit(2) from error
     except RateLimitError as error:
         limited = RateLimitedError("SoundCloud", error.retry_after)
         console.print(f"[red]{limited}[/red]")
+        _alert_owner(settings, limited)
         raise typer.Exit(2) from error
 
 
@@ -264,7 +287,7 @@ def want_sync(
     exit_code = 0
     for target in targets:
         try:
-            with _friendly_errors():
+            with _friendly_errors(settings):
                 client = _make_client(settings, target)
                 _run_want(settings, client, target, discogs_client, state_tracker, dry_run)
         except typer.Exit as stop:
@@ -314,7 +337,7 @@ def _guarded_sync(*args, **kwargs) -> SyncResult:
     """Runs a sync and turns limits and expired logins into a plain message.
 
     Args:
-        *args: Passed to _run_sync.
+        *args: Passed to _run_sync, the settings first.
         **kwargs: Passed to _run_sync.
 
     Returns:
@@ -323,7 +346,7 @@ def _guarded_sync(*args, **kwargs) -> SyncResult:
     Raises:
         typer.Exit: When the platform refuses the run.
     """
-    with _friendly_errors():
+    with _friendly_errors(args[0] if args else None):
         return _run_sync(*args, **kwargs)
 
 
@@ -346,9 +369,18 @@ def main(
             is_eager=True,
         ),
     ] = None,
+    unattended: Annotated[
+        bool,
+        typer.Option(
+            "--unattended",
+            help="Never open a browser or wait for one. Stop with a message when a login is needed.",
+        ),
+    ] = False,
 ) -> None:
     """Song Automations - Sync Discogs folders to playlists."""
-    pass
+    _cli_overrides["unattended"] = unattended
+    if unattended:
+        console.print(f"[dim]Unattended run started {datetime.now():%Y-%m-%d %H:%M}[/dim]")
 
 
 @sync_app.command("spotify")
