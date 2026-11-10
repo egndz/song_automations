@@ -224,6 +224,31 @@ def state(tmp_path):
     return StateTracker(tmp_path / "state.db")
 
 
+def settings_beside(state, **overrides) -> Settings:
+    """Builds settings whose data directory is the temporary folder of the state database.
+
+    Without a data directory the settings would point at the real one in the
+    home folder, and anything an engine wrote would land there.
+
+    Args:
+        state: Tracker.
+        **overrides: Settings to change.
+
+    Returns:
+        Settings that read no .env file and keep their data next to the database.
+    """
+    return Settings(_env_file=None, data_dir=state._db_path.parent, **overrides)
+
+
+@pytest.mark.parametrize("overrides", [{}, {"soundcloud_gated_tracks": True}, {"unattended": True}])
+def test_engine_settings_stay_in_the_temporary_folder(state, tmp_path, overrides):
+    """Every path the engine settings name lies inside the temporary folder of the test."""
+    settings = settings_beside(state, **overrides)
+    paths = [settings.data_dir, settings.db_path, settings.cache_dir, settings.reports_dir, settings.log_path]
+    assert all(path.is_relative_to(tmp_path) for path in paths)
+    assert all(getattr(settings, name) == value for name, value in overrides.items())
+
+
 def run(state, discogs, spotify, folder_names=None, dry_run=False):
     """Runs a Spotify sync.
 
@@ -237,7 +262,7 @@ def run(state, discogs, spotify, folder_names=None, dry_run=False):
     Returns:
         The result.
     """
-    engine = SyncEngine(Settings(_env_file=None), discogs, state, Console(quiet=True))
+    engine = SyncEngine(settings_beside(state), discogs, state, Console(quiet=True))
     return engine.sync_to_spotify(spotify, include_wantlist=False, folder_names=folder_names, dry_run=dry_run)
 
 
@@ -408,7 +433,7 @@ def test_released_tracks_refuse_fan_uploads(state, destination, codes, on_spotif
     if on_spotify:
         state.save_matched_track(1, "A1", "Bicep", "Glue", "spotify", "sp1", 0.9, match_tier="exact")
     finder = FakeFinder(codes)
-    engine = SyncEngine(Settings(_env_file=None), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
+    engine = SyncEngine(settings_beside(state), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
     source = engine._to_source(track, Release(1, "Release", "Bicep", 2017, 1, "Folder"), destination)
     assert (set(source.isrcs), source.fan_uploads, len(finder.asked)) == (set(isrcs), fan_uploads, lookups)
 
@@ -480,7 +505,7 @@ def run_soundcloud(state, soundcloud, gated: bool, tracks=None):
     Returns:
         The result.
     """
-    settings = Settings(_env_file=None, soundcloud_gated_tracks=gated)
+    settings = settings_beside(state, soundcloud_gated_tracks=gated)
     discogs = FakeDiscogs({"House": tracks or [discogs_track()]})
     engine = SyncEngine(settings, discogs, state, Console(quiet=True))
     return engine.sync_to_soundcloud(soundcloud, include_wantlist=False)
@@ -611,7 +636,7 @@ def test_spotify_code_joins_the_catalogue_codes(state, destination, stored, foun
             match_tier="exact", matched_duration_ms=stored[1], matched_isrc=stored[0],
         )
     finder = FakeFinder(found) if has_finder else None
-    engine = SyncEngine(Settings(_env_file=None), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
+    engine = SyncEngine(settings_beside(state), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
     source = engine._to_source(track, Release(1, "Release", "Cat Stevens", 1970, 1, "Folder"), destination)
     assert dict(source.isrcs) == isrcs
     assert source.fan_uploads is not bool(stored or found)
