@@ -76,7 +76,9 @@ class IsrcFinder:
         so the failure is logged once and the sync carries on without codes.
         An error about one track only skips that track, but several bad
         answers in a row mean the catalogue itself is broken, and the lookups
-        stop for the run. A failed lookup is never remembered.
+        stop for the run. A failed lookup is never remembered. An answer is
+        remembered per artist, title and credited remixers, so a remix that
+        Discogs names only in its credits never gets the codes of the original.
 
         Args:
             source: Source track.
@@ -86,7 +88,7 @@ class IsrcFinder:
             Length in milliseconds by code for the exact version, empty when
             the catalogue lacks it.
         """
-        key = f"isrc:{artist}|{source.title}"
+        key = "|".join([f"isrc:{artist}", source.title, *source.remixers])
         stored = self._cache.get_search_cache(PLATFORM, key)
         if stored is not None:
             return dict(stored)

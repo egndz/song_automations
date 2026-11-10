@@ -204,3 +204,20 @@ def test_three_bad_answers_in_a_row_switch_the_lookups_off(broken, order, calls,
     found = [finder.find(SourceTrack(("Bicep",), title), "Bicep") for title in order]
     assert (catalogue.calls, len(cache.data), found[-1]) == (calls, remembered, last)
     assert all(found[index] == {} for index, title in enumerate(order) if title in broken)
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        [(), ("Four Tet",)],
+        [("Four Tet",), ()],
+        [(), ("Four Tet",), (), ("Four Tet",)],
+    ],
+)
+def test_remix_named_only_in_the_credits_never_gets_the_code_of_the_original(order):
+    """The remembered answer for a title is not reused for the same title with a credited remixer."""
+    catalogue, cache = FakeCatalogue([entry(1, "Opal")], {"1": "GBCFB2000111"}), MemoryCache()
+    finder = IsrcFinder(catalogue, cache)
+    found = [finder.find(SourceTrack(("Bicep",), "Opal", remixers=remixers), "Bicep") for remixers in order]
+    assert found == [{} if remixers else {"GBCFB2000111": 300_000} for remixers in order]
+    assert len(cache.data) == 2
