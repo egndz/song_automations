@@ -6,9 +6,11 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Protocol
 
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from song_automations.clients.discogs import DiscogsClient, Folder, Release, Track
@@ -20,7 +22,7 @@ from song_automations.matching.resolver import (
     SpotifySearcher,
     resolve_release,
 )
-from song_automations.snapshots import name_of
+from song_automations.snapshots import BEFORE_DELETE, SnapshotStore, name_of
 from song_automations.state.tracker import GATED, Destination, StateTracker
 
 MISSING_RETRY_DAYS = 7
@@ -97,6 +99,7 @@ class SyncResult:
         tracks_missing: Number of tracks not found.
         tracks_flagged: Number of tracks flagged for review.
         tracks_gated: Missing tracks that exist only as uploads the account cannot play in full.
+        snapshot_dir: Folder holding what the changed playlists held before, or None when nothing changed.
     """
 
     operations: list[SyncOperation] = field(default_factory=list)
@@ -107,6 +110,7 @@ class SyncResult:
     tracks_missing: int = 0
     tracks_flagged: int = 0
     tracks_gated: int = 0
+    snapshot_dir: Path | None = None
 
 
 class PlaylistClient(Protocol):
@@ -138,6 +142,8 @@ class SyncEngine:
         state_tracker: State tracker for caching.
         console: Rich console for output.
         isrc_finder: Looks up recording codes for SoundCloud matching, optional.
+        snapshots: Saves what a playlist held before it is changed. Without one
+            the engine saves under the data directory of the settings.
     """
 
     def __init__(
@@ -147,12 +153,16 @@ class SyncEngine:
         state_tracker: StateTracker,
         console: Console | None = None,
         isrc_finder: IsrcFinder | None = None,
+        snapshots: SnapshotStore | None = None,
     ) -> None:
         self._settings = settings
         self._discogs = discogs_client
         self._state = state_tracker
         self._console = console or Console()
         self._isrc_finder = isrc_finder
+        self._snapshots = snapshots or SnapshotStore(
+            settings.snapshots_dir, runs_kept=settings.snapshot_runs_kept
+        )
 
     def sync_to_spotify(
         self,
@@ -230,6 +240,8 @@ class SyncEngine:
         sync_id = str(uuid.uuid4())
 
         try:
+            if not dry_run:
+                self._snapshots.prune()
             with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
@@ -315,8 +327,12 @@ class SyncEngine:
                 message=f"Sync failed: {str(e)}",
                 details={"error": str(e), "traceback": traceback.format_exc()},
             )
+            if self._snapshots.hint:
+                self._console.print(f"[dim]{escape(self._snapshots.hint)}[/dim]")
             raise
 
+        if self._snapshots.written:
+            result.snapshot_dir = self._snapshots.run_dir
         return result
 
     def _sync_folder(
@@ -688,6 +704,9 @@ class SyncEngine:
     ) -> None:
         """Makes a playlist hold exactly the chosen tracks, each one once.
 
+        What the playlist held is saved before the first change, from the track
+        list that is read anyway.
+
         Args:
             playlist: Target playlist.
             desired: Chosen ids in playlist order, without repeats.
@@ -695,8 +714,13 @@ class SyncEngine:
             destination: Target platform.
             dry_run: If True, only count what would change.
             result: Result to update.
+
+        Raises:
+            SnapshotError: When the snapshot could not be written. The playlist is
+                then left unchanged.
         """
-        current = [str(track.id) for track in playlist_client.get_playlist_tracks(playlist.id)]
+        tracks = playlist_client.get_playlist_tracks(playlist.id)
+        current = [str(track.id) for track in tracks]
         if current and not desired:
             self._console.print(
                 f"  [yellow]Nothing matched for '{name_of(playlist)}'; leaving the playlist alone.[/yellow]"
@@ -710,6 +734,7 @@ class SyncEngine:
         result.tracks_removed += len(to_remove)
         if dry_run or not (to_add or to_remove or repeated):
             return
+        self._snapshots.save(destination, playlist, tracks)
         if destination == "spotify":
             uri = "spotify:track:{}".format
             drop = to_remove + [track_id for track_id in repeated if track_id in wanted]
@@ -731,6 +756,8 @@ class SyncEngine:
     ) -> SyncResult:
         """Delete playlists for folders that no longer exist.
 
+        A playlist is read and saved before it is deleted, so it can be recreated.
+
         Args:
             playlist_client: Platform client.
             destination: Target platform.
@@ -740,6 +767,10 @@ class SyncEngine:
 
         Returns:
             SyncResult with deletion operations.
+
+        Raises:
+            SnapshotError: When a snapshot could not be written. That playlist is
+                then not deleted.
         """
         result = SyncResult()
 
@@ -758,6 +789,8 @@ class SyncEngine:
                 if not dry_run:
                     playlist = playlist_client.find_playlist_by_name(mapping.playlist_name)
                     if playlist:
+                        tracks = playlist_client.get_playlist_tracks(playlist.id)
+                        self._snapshots.save(destination, playlist, tracks, reason=BEFORE_DELETE)
                         playlist_client.delete_playlist(playlist.id)
                     self._state.delete_folder_mapping(mapping.discogs_folder_id, destination)
                     self._state.log_sync_event(

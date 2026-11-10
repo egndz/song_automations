@@ -26,6 +26,7 @@ class Settings(BaseSettings):
         soundcloud_gated_tracks: Whether SoundCloud tracks the account cannot play in full may match.
         spotify_search_budget: Spotify searches one run may make.
         login_wait_seconds: Seconds to wait for a login page to be approved in the browser.
+        snapshot_runs_kept: Newest runs whose playlist snapshots are kept.
         high_confidence: Threshold for high confidence matches (auto-add).
         log_level: Logging level for file output.
     """
@@ -97,6 +98,11 @@ class Settings(BaseSettings):
         ge=1,
         description="Seconds to wait for a platform login page to be approved in the browser",
     )
+    snapshot_runs_kept: int = Field(
+        default=30,
+        ge=1,
+        description="Newest runs whose playlist snapshots are kept; older ones are deleted when a sync starts",
+    )
     high_confidence: float = Field(
         default=0.50,
         ge=0.0,
@@ -122,6 +128,11 @@ class Settings(BaseSettings):
     def reports_dir(self) -> Path:
         """Path to the reports directory."""
         return self.data_dir / "reports"
+
+    @property
+    def snapshots_dir(self) -> Path:
+        """Path to the folder holding the playlist snapshots of each run."""
+        return self.data_dir / "snapshots"
 
     @property
     def log_path(self) -> Path:
