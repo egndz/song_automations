@@ -67,13 +67,16 @@ class IsrcFinder:
         self._client = client
         self._cache = cache
         self._failed = False
+        self._errors = 0
 
     def find(self, source: SourceTrack, artist: str) -> dict[str, int | None]:
         """Lists the recording codes of a track with the length of each recording.
 
         A catalogue that cannot be reached costs coverage, never correctness,
         so the failure is logged once and the sync carries on without codes.
-        An error about one track only skips that track.
+        An error about one track only skips that track, but several bad
+        answers in a row mean the catalogue itself is broken, and the lookups
+        stop for the run. A failed lookup is never remembered.
 
         Args:
             source: Source track.
@@ -96,8 +99,16 @@ class IsrcFinder:
             logger.warning("Recording codes are unavailable for this run: %s", error)
             return {}
         except DeezerError as error:
+            self._errors += 1
             logger.warning("No recording code for %s - %s: %s", artist, source.title, error)
+            if self._errors >= MAX_ERRORS_IN_A_ROW:
+                self._failed = True
+                logger.warning(
+                    "Recording codes are unavailable for this run: %d bad answers in a row",
+                    self._errors,
+                )
             return {}
+        self._errors = 0
         self._cache.save_search_cache(PLATFORM, key, codes)
         return dict(codes)
 

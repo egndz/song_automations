@@ -179,3 +179,28 @@ def test_catalogue_query_fields_are_never_broken_or_empty(artist, title, expecte
     catalogue = FakeCatalogue()
     assert IsrcFinder(catalogue, MemoryCache()).find(SourceTrack((artist,), title), artist) == {}
     assert catalogue.queries == expected
+
+
+@pytest.mark.parametrize(
+    ("broken", "order", "calls", "remembered", "last"),
+    [
+        ({"Glue", "Opal", "Rain"}, ["Glue", "Opal", "Rain", "Apricots"], 3, 0, {}),
+        ({"Glue", "Opal", "Rain"}, ["Glue", "Opal", "Rain", "Atlas", "Aura", "Apricots"], 3, 0, {}),
+        ({"Glue", "Opal"}, ["Glue", "Opal", "Apricots"], 5, 1, {"GBCFB2000123": 300_000}),
+        (
+            {"Glue", "Opal", "Atlas", "Aura"},
+            ["Glue", "Opal", "Rain", "Atlas", "Aura", "Apricots"],
+            9,
+            2,
+            {"GBCFB2000123": 300_000},
+        ),
+    ],
+)
+def test_three_bad_answers_in_a_row_switch_the_lookups_off(broken, order, calls, remembered, last):
+    """A broken catalogue is given up on after three tracks, a good answer restarts the count and no failure is stored."""
+    catalogue = FakeCatalogue([entry(1, "Apricots")], {"1": "GBCFB2000123"}, broken=broken)
+    cache = MemoryCache()
+    finder = IsrcFinder(catalogue, cache)
+    found = [finder.find(SourceTrack(("Bicep",), title), "Bicep") for title in order]
+    assert (catalogue.calls, len(cache.data), found[-1]) == (calls, remembered, last)
+    assert all(found[index] == {} for index, title in enumerate(order) if title in broken)
