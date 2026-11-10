@@ -12,6 +12,7 @@ from typing import Any, Literal
 Destination = Literal["spotify", "soundcloud"]
 MATCHER_SCHEMA_VERSION = 2
 GATED = "gated"
+SEARCH_CACHE_MAX_AGE_DAYS = 30
 EventType = Literal[
     "sync_start",
     "sync_complete",
@@ -312,8 +313,10 @@ class StateTracker:
         """Moves the database to the gate-based matcher, once.
 
         Matches made by the old scorer cannot be trusted, so unreviewed rows are
-        dropped and searched again. Reviewed rows stay, refusals are remembered
-        for good, and a copy of the old database is kept next to it.
+        dropped and searched again. Approved rows stay and never expire (see
+        get_cached_match). Refused rows stay until the next search replaces
+        them, their refusals are remembered for good, and a copy of the old
+        database is kept next to it.
 
         Args:
             conn: Database connection.
@@ -395,7 +398,9 @@ class StateTracker:
                 (destination, track_id, release_id, status, label),
             )
 
-    def get_search_cache(self, platform: str, key: str, max_age_days: int = 30) -> list | dict | None:
+    def get_search_cache(
+        self, platform: str, key: str, max_age_days: int = SEARCH_CACHE_MAX_AGE_DAYS
+    ) -> list | dict | None:
         """Reads a stored search response.
 
         Args:
@@ -415,6 +420,22 @@ class StateTracker:
                 (platform, key, f"-{max_age_days} days"),
             ).fetchone()
         return json.loads(row["payload"]) if row else None
+
+    def purge_search_cache(self, max_age_days: int = SEARCH_CACHE_MAX_AGE_DAYS) -> int:
+        """Deletes stored search responses that are too old to be read again.
+
+        Args:
+            max_age_days: Entries older than this are deleted.
+
+        Returns:
+            Number of entries deleted.
+        """
+        with self._get_connection() as conn:
+            cursor = conn.execute(
+                "DELETE FROM search_cache WHERE fetched_at <= datetime('now', ?)",
+                (f"-{max_age_days} days",),
+            )
+            return cursor.rowcount
 
     def save_search_cache(self, platform: str, key: str, payload: list | dict) -> None:
         """Stores a search response.
@@ -650,14 +671,20 @@ class StateTracker:
     ) -> MatchedTrack | None:
         """Get a cached track match (excludes rejected tracks).
 
+        Only unreviewed rows expire. A row a person approved or picked by hand
+        is returned however old it is, so it is never searched again and
+        overwritten. A rejected row is never returned, which lets the next
+        search replace it with another candidate.
+
         Args:
             discogs_release_id: Discogs release ID.
             track_position: Track position (e.g., A1).
             destination: Target platform.
-            max_age_days: Maximum age of cache entry in days (default 30).
+            max_age_days: Maximum age in days of an unreviewed entry (default 30).
 
         Returns:
-            MatchedTrack if found, not expired, and not rejected. None otherwise.
+            MatchedTrack if found, not rejected, and either reviewed or not
+            expired. None otherwise.
         """
         with self._get_connection() as conn:
             row = conn.execute(
@@ -666,7 +693,10 @@ class StateTracker:
                 WHERE discogs_release_id = ?
                 AND discogs_track_position = ?
                 AND destination = ?
-                AND searched_at > datetime('now', ?)
+                AND (
+                    searched_at > datetime('now', ?)
+                    OR COALESCE(review_status, '') NOT IN ('', 'pending')
+                )
                 AND (review_status IS NULL OR review_status != 'rejected')
                 """,
                 (discogs_release_id, track_position, destination, f"-{max_age_days} days"),
