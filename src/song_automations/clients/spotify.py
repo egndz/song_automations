@@ -1,6 +1,7 @@
 """Spotify API client for playlist management and track search."""
 
 import logging
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,6 +22,7 @@ from song_automations.errors import (
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
+    UnattendedLoginError,
 )
 
 logger = logging.getLogger(__name__)
@@ -139,15 +141,62 @@ class TimedSpotifyOAuth(SpotifyOAuth):
     """Spotify login that stops waiting for the browser after a set time.
 
     spotipy waits for the approval for ever, which hangs a run nobody is watching.
+    An unattended run does not ask the browser at all.
 
     Args:
         wait_seconds: Seconds to wait for the approval.
+        unattended: Whether nobody is there to approve a page, so none may be opened.
         **kwargs: Passed to SpotifyOAuth.
     """
 
-    def __init__(self, wait_seconds: int, **kwargs) -> None:
+    def __init__(self, wait_seconds: int, unattended: bool = False, **kwargs) -> None:
         super().__init__(**kwargs)
         self._wait_seconds = wait_seconds
+        self.unattended = unattended
+
+    def get_auth_response(self, open_browser: bool | None = None) -> str:
+        """Asks the browser for the approval, unless nobody is there to give it.
+
+        spotipy comes here whenever no usable login is saved, so this is the
+        one place where a first login would open a page or wait for typed input.
+
+        Args:
+            open_browser: Whether to open the page, None for the configured choice.
+
+        Returns:
+            The authorization code.
+
+        Raises:
+            UnattendedLoginError: When the run is unattended.
+        """
+        if self.unattended:
+            raise UnattendedLoginError(PLATFORM)
+        return super().get_auth_response(open_browser)
+
+    def _get_auth_response_interactive(self, open_browser: bool = False) -> str:
+        """Asks for the redirect address to be pasted, only when someone can type it.
+
+        spotipy falls back to this prompt when the redirect address is not a
+        local http address with a port. Without a terminal the prompt would
+        wait for ever or crash, so the login is refused with an explanation.
+
+        Args:
+            open_browser: Whether to open the page first.
+
+        Returns:
+            The authorization code.
+
+        Raises:
+            LoginFailedError: When there is no terminal to paste into.
+        """
+        if not sys.stdin or not sys.stdin.isatty():
+            raise LoginFailedError(
+                PLATFORM,
+                "the redirect address is not a local http address with a port, such as "
+                "http://127.0.0.1:8888/callback, so the approval would have to be pasted "
+                "into a terminal and there is none",
+            )
+        return super()._get_auth_response_interactive(open_browser)
 
     def _get_auth_response_local_server(self, redirect_port: int) -> str:
         """Opens the approval page and waits for Spotify to send the browser back.
@@ -204,6 +253,7 @@ class SpotifyClient:
 
         self._auth = TimedSpotifyOAuth(
             wait_seconds=settings.login_wait_seconds,
+            unattended=settings.unattended,
             client_id=settings.spotify_client_id,
             client_secret=settings.spotify_client_secret,
             redirect_uri=settings.spotify_redirect_uri,
@@ -234,15 +284,20 @@ class SpotifyClient:
         """Opens the Spotify approval page in the browser and waits for the approval.
 
         The saved login is not consulted, so one that stopped working is replaced.
+        Asking for a login by name means someone is there, so the page opens
+        even when the settings say the run is unattended.
 
         Raises:
             LoginTimeoutError: When the page is not approved in time.
             LoginFailedError: When Spotify refuses the login.
         """
+        self._auth.unattended = False
         try:
             self._auth.get_access_token(as_dict=False, check_cache=False)
         except (SpotifyOauthError, OSError) as error:
             raise LoginFailedError(PLATFORM, str(error)) from error
+        finally:
+            self._auth.unattended = self._settings.unattended
         if self._cache_path.exists():
             self._cache_path.chmod(0o600)
         self._user_id = None
@@ -264,15 +319,20 @@ class SpotifyClient:
         """Sets a saved login that Spotify refuses aside and asks for a new one.
 
         A login saved for another Spotify app, or one whose approval was
-        withdrawn, fails on every refresh until the saved file is gone.
+        withdrawn, fails on every refresh until the saved file is gone. An
+        unattended run cannot ask for a new one, so it leaves the file where
+        it is and stops.
 
         Args:
             error: The refusal.
 
         Raises:
+            UnattendedLoginError: When the run is unattended.
             LoginTimeoutError: When the page is not approved in time.
             LoginFailedError: When Spotify refuses the new login.
         """
+        if self._settings.unattended:
+            raise UnattendedLoginError(PLATFORM) from error
         stale = self._set_login_aside()
         logger.warning(
             "Spotify refused the saved login (%s). It was moved to %s and the Spotify "
