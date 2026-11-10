@@ -64,8 +64,8 @@ REJECT_MARKERS = re.compile(
     r"nightcore|sped up|speed up|slowed|8d audio|type beat|reaction|tutorial|"
     r"preview|snippet|teaser|clip|sample pack|mashup|mash up|bootleg|vs|"
     r"acapella|a cappella|instrumental|piano version|acoustic|"
-    r"jools holland|kexp|tiny desk|peel session|bbc session|maida vale|live lounge|audiotree|"
-    r"colors show|live at|live from|live on|in session|unplugged|ao vivo|en vivo|en directo|en concierto)\b"
+    r"jools holland|kexp|tiny desk|sessions?|maida vale|live lounge|audiotree|"
+    r"colors show|live at|live from|live on|unplugged|ao vivo|en vivo|en directo|en concierto)\b"
 )
 SOFT_MARKERS = re.compile(
     r"\b(dj set|live set|mixed by|mixtape|podcast|radio show|episode|boiler room|essential mix|"
@@ -105,7 +105,7 @@ class SourceTrack:
     """A Discogs track prepared for matching.
 
     Attributes:
-        artists: Credited artist names plus any known aliases.
+        artists: Credited artist names.
         title: Raw track title.
         duration_ms: Track length if Discogs knows it.
         release_title: Title of the release the track is on.
@@ -114,6 +114,9 @@ class SourceTrack:
         fan_uploads: Whether uploads by strangers may match. Off when Spotify
             already carries the track, since fan uploads of released music
             turned out to be covers or tributes about as often as the record.
+        aliases: Other names of the artists. They count when a platform names
+            the artist of a track, but an account that merely has such a name
+            is not trusted, since short aliases are common account names.
         isrcs: Recording codes of this exact version with the length the
             catalogue gives for each, taken from a catalogue that lists it. A
             candidate carrying one of them is the same recording, whoever
@@ -127,6 +130,7 @@ class SourceTrack:
     labels: tuple[str, ...] = ()
     remixers: tuple[str, ...] = ()
     fan_uploads: bool = True
+    aliases: tuple[str, ...] = ()
     isrcs: Mapping[str, int | None] = field(default_factory=dict)
 
 
@@ -555,6 +559,24 @@ def _fan_upload_unverified(source: SourceTrack, candidate: Candidate) -> bool:
     return True
 
 
+def _length_is_hidden(source: SourceTrack, candidate: Candidate) -> bool:
+    """Checks whether a gated track hides the length that would confirm its version.
+
+    SoundCloud reports the 30 second clip of a subscriber-only track, not its
+    length. When Discogs gives a length that cannot be compared, a studio cut
+    cannot be told from the live take on the record, so the match is kept but
+    counts as another version.
+
+    Args:
+        source: Source track.
+        candidate: Candidate track.
+
+    Returns:
+        True when the record has a length and the gated candidate shows none.
+    """
+    return bool(source.duration_ms) and not candidate.duration_ms and candidate.access != PLAYABLE
+
+
 def _is_cut(length: int | None, *full_lengths: int | None) -> bool:
     """Checks whether an upload is too far from the length of the recording.
 
@@ -636,7 +658,7 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         elif reading.kind == "uploader":
             if not _account_is(source.artists, candidate.uploader):
                 continue
-        elif not artists_agree(source.artists, reading.artists):
+        elif not artists_agree((*source.artists, *source.aliases), reading.artists):
             continue
         tier = classify_tier(source_versions, reading_versions)
         if best is None or tier > best[0]:
@@ -645,7 +667,7 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         return Rejection(candidate, reason)
     tier, reading = best
     duration_reason = _duration_rejection(source.duration_ms, candidate.duration_ms, tier)
-    if duration_reason == "duration_mismatch":
+    if duration_reason == "duration_mismatch" or _length_is_hidden(source, candidate):
         tier = Tier.OTHER_MIX
     elif duration_reason:
         return Rejection(candidate, duration_reason)

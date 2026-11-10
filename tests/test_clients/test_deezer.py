@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from song_automations.clients import deezer
-from song_automations.clients.deezer import DeezerClient, DeezerError
+from song_automations.clients.deezer import DeezerClient, DeezerError, DeezerQuotaError
 
 QUOTA = {"error": {"type": "Exception", "message": "Quota limit exceeded", "code": 4}}
 MISSING = {"error": {"type": "DataException", "message": "no data", "code": 800}}
@@ -64,12 +64,30 @@ def test_search_returns_tracks_and_waits_out_the_quota(bodies, expected, request
     assert sent[0].url.params["q"] == 'artist:"Bicep" track:"Glue"'
 
 
-@pytest.mark.parametrize("bodies", [[MISSING], [QUOTA] * 4])
-def test_error_answers_are_raised(bodies):
-    """An unknown track or a quota that never clears is an error, not an empty result."""
+@pytest.mark.parametrize(
+    ("bodies", "error"),
+    [
+        ([MISSING], DeezerError),
+        ([{"error": "broken"}], DeezerError),
+        ([[1, 2]], DeezerError),
+        ([QUOTA] * 4, DeezerQuotaError),
+    ],
+)
+def test_error_answers_are_raised(bodies, error):
+    """An unknown track, an odd answer or a quota that never clears is an error, not an empty result."""
     client, _ = client_answering(bodies)
-    with pytest.raises(DeezerError):
+    with pytest.raises(error) as raised:
         client.track_raw("1")
+    assert type(raised.value) is error
+
+
+@pytest.mark.parametrize("text", ["<html>Service unavailable</html>", ""])
+def test_answer_that_is_not_json_is_an_error(text):
+    """A web page instead of data does not crash the sync with a decoding error."""
+    transport = httpx.MockTransport(lambda request: httpx.Response(200, text=text))
+    client = DeezerClient(httpx.Client(transport=transport), pause_seconds=0)
+    with pytest.raises(DeezerError):
+        client.search_raw("Bicep Glue")
 
 
 @pytest.mark.parametrize("track_id", ["3135556", "1"])

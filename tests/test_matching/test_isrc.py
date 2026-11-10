@@ -3,7 +3,7 @@
 import httpx
 import pytest
 
-from song_automations.clients.deezer import DeezerError
+from song_automations.clients.deezer import DeezerError, DeezerQuotaError
 from song_automations.matching.isrc import IsrcFinder, deezer_candidate
 from song_automations.matching.matcher import SourceTrack
 
@@ -120,7 +120,7 @@ def test_answer_is_remembered_found_or_not(results, codes):
     assert catalogue.calls == spent
 
 
-@pytest.mark.parametrize("error", [httpx.ConnectError("down"), DeezerError("Quota limit exceeded")])
+@pytest.mark.parametrize("error", [httpx.ConnectError("down"), DeezerQuotaError("quota limit exceeded")])
 def test_unreachable_catalogue_costs_coverage_not_the_sync(error):
     """The lookup gives up for the run, returns no codes and remembers nothing."""
     catalogue, cache = FakeCatalogue(error=error), MemoryCache()
@@ -137,3 +137,14 @@ def test_deezer_candidate_reads_the_track(seconds, expected):
     candidate = deezer_candidate(entry(7, "Glue", seconds=seconds))
     assert (candidate.id, candidate.raw_title, candidate.album, candidate.duration_ms) == ("7", "Glue", "Isles", expected)
     assert candidate.readings[0].artists == ("Bicep",)
+
+
+@pytest.mark.parametrize("error", [DeezerError("no data"), DeezerError("answer is not JSON")])
+def test_error_about_one_track_only_skips_that_track(error):
+    """A bad answer for one track is not remembered and does not switch the lookups off."""
+    catalogue, cache = FakeCatalogue(error=error), MemoryCache()
+    finder = IsrcFinder(catalogue, cache)
+    assert finder.find(SourceTrack(("Bicep",), "Glue"), "Bicep") == {}
+    assert finder.find(SourceTrack(("Bicep",), "Opal"), "Bicep") == {}
+    assert catalogue.calls == 2
+    assert cache.data == {}

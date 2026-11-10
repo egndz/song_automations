@@ -5,7 +5,7 @@ from typing import Protocol
 
 import httpx
 
-from song_automations.clients.deezer import DeezerError
+from song_automations.clients.deezer import DeezerError, DeezerQuotaError
 from song_automations.matching.matcher import (
     Candidate,
     Reading,
@@ -72,6 +72,7 @@ class IsrcFinder:
 
         A catalogue that cannot be reached costs coverage, never correctness,
         so the failure is logged once and the sync carries on without codes.
+        An error about one track only skips that track.
 
         Args:
             source: Source track.
@@ -89,9 +90,12 @@ class IsrcFinder:
             return {}
         try:
             codes = self._lookup(source, artist)
-        except (httpx.HTTPError, DeezerError) as error:
+        except (httpx.HTTPError, DeezerQuotaError) as error:
             self._failed = True
             logger.warning("Recording codes are unavailable for this run: %s", error)
+            return {}
+        except DeezerError as error:
+            logger.warning("No recording code for %s - %s: %s", artist, source.title, error)
             return {}
         self._cache.save_search_cache(PLATFORM, key, codes)
         return dict(codes)

@@ -16,6 +16,10 @@ class DeezerError(RuntimeError):
     """Deezer answered with an error instead of data."""
 
 
+class DeezerQuotaError(DeezerError):
+    """Deezer keeps refusing requests because too many were sent."""
+
+
 class DeezerClient:
     """Client for the unauthenticated Deezer API.
 
@@ -42,20 +46,27 @@ class DeezerClient:
             Decoded body.
 
         Raises:
-            DeezerError: If Deezer reports an error.
+            DeezerQuotaError: If the quota does not clear after waiting.
+            DeezerError: If Deezer reports any other error or sends no JSON object.
         """
         for attempt in range(QUOTA_RETRIES + 1):
             response = self._http.get(f"{self.API_BASE}{path}", params=params)
             response.raise_for_status()
-            body = response.json()
-            error = body.get("error") if isinstance(body, dict) else None
+            try:
+                body = response.json()
+            except ValueError as error:
+                raise DeezerError("answer is not JSON") from error
+            if not isinstance(body, dict):
+                raise DeezerError("answer is not an object")
+            error = body.get("error")
             if not error:
                 time.sleep(self._pause)
                 return body
-            if error.get("code") != QUOTA_ERROR_CODE or attempt == QUOTA_RETRIES:
-                raise DeezerError(str(error.get("message") or error))
+            code = error.get("code") if isinstance(error, dict) else None
+            if code != QUOTA_ERROR_CODE:
+                raise DeezerError(str(error))
             time.sleep(QUOTA_WAIT_SECONDS * (attempt + 1))
-        raise DeezerError("no answer")
+        raise DeezerQuotaError("quota limit exceeded")
 
     def search_raw(self, query: str, limit: int = 25) -> list[dict]:
         """Searches tracks.

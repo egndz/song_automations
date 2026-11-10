@@ -367,3 +367,50 @@ def test_clip_posted_under_the_code_of_the_full_track_is_refused(discogs_ms, cat
     source = SourceTrack(("Bicep",), "Glue", duration_ms=discogs_ms, fan_uploads=False, isrcs={"GBCFB1700229": catalogue_ms})
     clip = catalogue_upload(title="BICEP | GLUE // CLIP", uploader="BICEP", isrc="GBCFB1700229", access=access, ms=upload_ms)
     assert isinstance(evaluate(source, clip), Match) is accepted
+
+
+@pytest.mark.parametrize(
+    ("candidate", "accepted"),
+    [
+        (soundcloud("YAUNiMAMi - Drift (original)", "Dove"), False),
+        (soundcloud("Drift", "Dove"), False),
+        (spotify("Drift", "Dove"), True),
+        (soundcloud("Drift", "Bicep"), True),
+    ],
+)
+def test_account_named_like_an_alias_is_not_the_artist(candidate, accepted):
+    """Bicep also record as Dove; a stranger's account called Dove proves nothing, a track credited to Dove does."""
+    source = SourceTrack(("Bicep",), "Drift", aliases=("Dove",))
+    assert isinstance(evaluate(source, candidate), Match) is accepted
+
+
+@pytest.mark.parametrize(
+    ("record", "upload", "accepted"),
+    [
+        ("Bullfrog Blues", "Bullfrog Blues (WNCR Cleveland Radio Session / 1973)", False),
+        ("Bullfrog Blues", "Bullfrog Blues (Peel Sessions)", False),
+        ("Bullfrog Blues", "Bullfrog Blues", True),
+        ("Jam Session", "Jam Session", True),
+    ],
+)
+def test_radio_session_is_not_the_record(record, upload, accepted):
+    """A session recording only matches a record whose own title says session."""
+    source = SourceTrack(("Rory Gallagher",), record)
+    assert isinstance(evaluate(source, soundcloud(upload, "Rory Gallagher")), Match) is accepted
+
+
+@pytest.mark.parametrize(
+    ("record_ms", "access", "upload_ms", "isrcs", "tier"),
+    [
+        (187_000, "preview", 30_000, {}, Tier.OTHER_MIX),
+        (None, "preview", 30_000, {}, Tier.EXACT),
+        (187_000, "preview", 190_000, {}, Tier.EXACT),
+        (187_000, "playable", None, {}, Tier.EXACT),
+        (187_000, "preview", 30_000, {"USRH11505140": 187_000}, Tier.EXACT),
+    ],
+)
+def test_gated_track_with_hidden_length_is_not_called_exact(record_ms, access, upload_ms, isrcs, tier):
+    """A live bootleg with a length cannot be told from the studio cut when SoundCloud hides the length."""
+    source = SourceTrack(("Led Zeppelin",), "Since I've Been Loving You", duration_ms=record_ms, isrcs=isrcs)
+    upload = catalogue_upload("Since I've Been Loving You (Remaster)", "Led Zeppelin", "USRH11505140", access, upload_ms)
+    assert evaluate(source, upload).tier == tier

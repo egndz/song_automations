@@ -336,7 +336,7 @@ def resolve_release(
         if decision.match is None and alias_lookup is not None:
             names = alias_lookup(index)
             if names:
-                source = replace(source, artists=tuple(source.artists) + tuple(names))
+                source = replace(source, aliases=tuple(names))
                 decision = decide(source, seen)
                 if decision.match is None:
                     for name in names[: searcher.alias_searches]:
