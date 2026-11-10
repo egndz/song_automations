@@ -1,5 +1,6 @@
 """End-to-end engine tests with fake platforms and a real state database."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -371,11 +372,11 @@ class FakeFinder:
     """Recording code lookup stand-in.
 
     Args:
-        codes: Codes every track gets.
+        codes: Codes every track gets, with their lengths when given as a mapping.
     """
 
     def __init__(self, codes=()) -> None:
-        self.codes = dict.fromkeys(codes)
+        self.codes = dict(codes) if isinstance(codes, dict) else dict.fromkeys(codes)
         self.asked = []
 
     def find(self, source, artist):
@@ -467,19 +468,21 @@ class FakeSoundCloud(FakeSpotify):
         self.playlists[playlist_id] = [str(t) for t in track_ids]
 
 
-def run_soundcloud(state, soundcloud, gated: bool):
-    """Runs a SoundCloud sync of one folder holding one track.
+def run_soundcloud(state, soundcloud, gated: bool, tracks=None):
+    """Runs a SoundCloud sync of one folder, holding one track unless others are given.
 
     Args:
         state: Tracker.
         soundcloud: SoundCloud fake.
         gated: Whether gated tracks may match.
+        tracks: Discogs tracks of the folder.
 
     Returns:
         The result.
     """
     settings = Settings(_env_file=None, soundcloud_gated_tracks=gated)
-    engine = SyncEngine(settings, FakeDiscogs({"House": [discogs_track()]}), state, Console(quiet=True))
+    discogs = FakeDiscogs({"House": tracks or [discogs_track()]})
+    engine = SyncEngine(settings, discogs, state, Console(quiet=True))
     return engine.sync_to_soundcloud(soundcloud, include_wantlist=False)
 
 
@@ -510,3 +513,132 @@ def test_allowing_gated_tracks_takes_effect_on_the_next_run(state, allowed_later
     result = run_soundcloud(state, soundcloud, allowed_later)
     assert soundcloud.playlists.get("Discogs - House", []) == playlist
     assert result.tracks_gated == (0 if allowed_later else 1)
+
+
+def bicep_upload(id, title, access, ms=300_000):
+    """Builds a raw SoundCloud track on the Bicep account.
+
+    Args:
+        id: Track id.
+        title: Upload title.
+        access: Access level for the account.
+        ms: Length SoundCloud reports, 30 seconds for a clip that hides it.
+
+    Returns:
+        Raw track.
+    """
+    return {"id": id, "title": title, "user": {"username": "Bicep"}, "duration": ms, "access": access}
+
+
+@pytest.mark.parametrize(
+    ("length", "uploads", "playlist", "missing", "counted"),
+    [
+        ("", [bicep_upload(7, "Opal", "playable")], ["7"], 1, 0),
+        ("", [bicep_upload(7, "Opal", "playable"), bicep_upload(8, "Opal (Four Tet Remix)", "preview")], ["7"], 1, 1),
+        ("", [bicep_upload(7, "Opal", "playable"), bicep_upload(8, "Opal (Four Tet Remix)", "playable")], ["7", "8"], 0, 0),
+        ("5:00", [bicep_upload(7, "Opal", "playable"), bicep_upload(8, "Opal (Four Tet Remix)", "preview", 30_000)], ["7"], 1, 1),
+        ("", [bicep_upload(7, "Opal", "preview")], [], 2, 1),
+    ],
+)
+def test_only_an_upload_the_account_cannot_play_counts_as_gated(state, length, uploads, playlist, missing, counted):
+    """A playable upload that went to the original does not make the missing remix look gated."""
+    tracks = [
+        replace(discogs_track("Opal", "A1"), duration=length),
+        replace(discogs_track("Opal (Four Tet Remix)", "B1"), duration=length),
+    ]
+    soundcloud = FakeSoundCloud(uploads)
+    result = run_soundcloud(state, soundcloud, False, tracks)
+    assert soundcloud.playlists.get("Discogs - House", []) == playlist
+    assert (result.tracks_missing, result.tracks_gated) == (missing, counted)
+
+
+KATMANDU_QUERY = 'track:"Katmandu" artist:"Cat Stevens"'
+KATMANDU_CODE = "GBUM71905959"
+
+
+def sync_katmandu_to_spotify(state, external_ids):
+    """Syncs Cat Stevens' Katmandu to Spotify from a track search result.
+
+    Args:
+        state: Tracker.
+        external_ids: The external ids Spotify lists for the track, None when it lists none.
+
+    Returns:
+        The Discogs tracks of the folder.
+    """
+    tracks = [discogs_track("Katmandu", "A1", artist="Cat Stevens")]
+    found = item("sp1", "Katmandu", "Cat Stevens")
+    if external_ids is not None:
+        found["external_ids"] = external_ids
+    run(state, FakeDiscogs({"House": tracks}), FakeSpotify({}, {KATMANDU_QUERY: [found]}))
+    return tracks
+
+
+@pytest.mark.parametrize(
+    ("external_ids", "expected"),
+    [
+        ({"isrc": "GBUM71905959"}, (KATMANDU_CODE, 200_000)),
+        ({"isrc": "gb-um7-19-05959"}, (KATMANDU_CODE, 200_000)),
+        ({}, None),
+        (None, None),
+    ],
+)
+def test_recording_code_of_a_spotify_match_is_stored(state, external_ids, expected):
+    """The code Spotify lists is kept with the match, in one spelling, and nothing is kept when it lists none."""
+    sync_katmandu_to_spotify(state, external_ids)
+    assert state.get_cached_match(1, "A1", "spotify").destination_track_id == "sp1"
+    assert state.get_exact_spotify_recording(1, "A1", "Katmandu") == expected
+
+
+@pytest.mark.parametrize(
+    ("destination", "stored", "found", "has_finder", "isrcs"),
+    [
+        ("soundcloud", (KATMANDU_CODE, 203_000), {}, True, {KATMANDU_CODE: 203_000}),
+        ("soundcloud", (KATMANDU_CODE, 203_000), {KATMANDU_CODE: 204_000}, True, {KATMANDU_CODE: 204_000}),
+        ("soundcloud", (KATMANDU_CODE, None), {"GBUM72005432": 215_000}, True, {KATMANDU_CODE: None, "GBUM72005432": 215_000}),
+        ("soundcloud", (KATMANDU_CODE, 203_000), {}, False, {KATMANDU_CODE: 203_000}),
+        ("soundcloud", ("gb-um7-19-05959", 203_000), {}, True, {KATMANDU_CODE: 203_000}),
+        ("soundcloud", None, {"GBUM72005432": 215_000}, True, {"GBUM72005432": 215_000}),
+        ("spotify", (KATMANDU_CODE, 203_000), {"GBUM72005432": 215_000}, True, {}),
+    ],
+)
+def test_spotify_code_joins_the_catalogue_codes(state, destination, stored, found, has_finder, isrcs):
+    """SoundCloud matching gets the Spotify code next to the catalogue's, and the catalogue's length wins."""
+    track = discogs_track("Katmandu", "A1", artist="Cat Stevens")
+    if stored:
+        state.save_matched_track(
+            1, "A1", "Cat Stevens", "Katmandu", "spotify", "sp1", 0.95,
+            match_tier="exact", matched_duration_ms=stored[1], matched_isrc=stored[0],
+        )
+    finder = FakeFinder(found) if has_finder else None
+    engine = SyncEngine(Settings(_env_file=None), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
+    source = engine._to_source(track, Release(1, "Release", "Cat Stevens", 1970, 1, "Folder"), destination)
+    assert dict(source.isrcs) == isrcs
+    assert source.fan_uploads is not bool(stored or found)
+
+
+@pytest.mark.parametrize(
+    ("external_ids", "upload_code", "upload_ms", "playlist"),
+    [
+        ({"isrc": KATMANDU_CODE}, KATMANDU_CODE, 203_000, ["7"]),
+        ({"isrc": KATMANDU_CODE}, "gb-um7-19-05959", 203_000, ["7"]),
+        (None, KATMANDU_CODE, 203_000, []),
+        ({"isrc": KATMANDU_CODE}, "GBUM72005432", 203_000, []),
+        ({"isrc": KATMANDU_CODE}, None, 203_000, []),
+        ({"isrc": KATMANDU_CODE}, KATMANDU_CODE, 90_000, []),
+    ],
+)
+def test_spotify_code_proves_the_official_upload_the_catalogue_lacks(state, external_ids, upload_code, upload_ms, playlist):
+    """An upload on a differently named account passes only with the code of the Spotify match and its full length."""
+    tracks = sync_katmandu_to_spotify(state, external_ids)
+    upload = {
+        "id": 7,
+        "title": "Katmandu (Remastered 2020)",
+        "user": {"username": "YusufCatStevens"},
+        "duration": upload_ms,
+        "access": "playable",
+        "isrc": upload_code,
+    }
+    soundcloud = FakeSoundCloud([upload])
+    run_soundcloud(state, soundcloud, False, tracks)
+    assert soundcloud.playlists.get("Discogs - House", []) == playlist

@@ -53,6 +53,7 @@ VERSION_WORDS = {
     "interpretation",
 }
 GENERIC_VERSION_WORDS = {"remix", "rmx", "mix", "version", "edit", "reedit"}
+GENERIC_VERSION_KINDS = {"rmx": "remix", "reedit": "edit", "version": "mix"}
 NEUTRAL_VERSION = re.compile(
     r"^(original( mix| version)?|album( version| mix)?|single( version)?|lp( version| mix)?|"
     r"stereo|mono|12( inch)?( version| mix)?|12 mix|vinyl( rip| version)?|"
@@ -77,7 +78,7 @@ PART_PATTERN = re.compile(r"\b(?:part|pt)\.?\s*(\d+|[ivx]{1,4})\b", re.IGNORECAS
 BRACKET_PATTERN = re.compile(r"[(\[{]([^)\]}]*)[)\]}]")
 FEATURING_PATTERN = re.compile(r"\s+(?:feat\.?|ft\.?|featuring|with)\s+.*$", re.IGNORECASE)
 ARTIST_SEPARATOR = re.compile(
-    r"\s*(?:,|&|/|\+|;|\s+x\s+|\bfeat\.?|\bft\.?|\bfeaturing\b|\band\b|\bvs\.?\b|\bwith\b|\bpresents\b|\bpres\.?\b)\s*",
+    r"\s*(?:,|&|/|\+|;|\s+x\s+|\bfeat\b\.?|\bft\b\.?|\bfeaturing\b|\band\b|\bvs\.?\b|\bwith\b|\bpresents\b|\bpres\.?\b)\s*",
     re.IGNORECASE,
 )
 DISAMBIGUATION = re.compile(r"\s*\(\d+\)")
@@ -389,8 +390,27 @@ def _distinctive(version: str) -> str:
     return " ".join(word for word in version.split() if word not in GENERIC_VERSION_WORDS)
 
 
+def _generic_kinds(version: str) -> frozenset[str]:
+    """Names the kind of version an annotation without a distinctive word describes.
+
+    Args:
+        version: Normalized version annotation made of generic mix words only.
+
+    Returns:
+        The kinds it names, with spellings of one kind brought together. The
+        vague words mix and version only count when nothing else is said, so
+        "remix version" is a remix.
+    """
+    kinds = frozenset(GENERIC_VERSION_KINDS.get(word, word) for word in version.split())
+    return kinds - {"mix"} or kinds
+
+
 def versions_agree(source: Sequence[str], candidate: Sequence[str]) -> bool:
     """Checks whether two lists of version annotations describe the same mix.
+
+    Annotations that name a remixer agree when the names do. Annotations
+    without any distinctive word agree only when they name the same kind of
+    version, so a bare edit is not taken for a bare remix.
 
     Args:
         source: Source annotations.
@@ -405,8 +425,9 @@ def versions_agree(source: Sequence[str], candidate: Sequence[str]) -> bool:
             if left_word and right_word:
                 if fuzz.token_set_ratio(left_word, right_word) >= VERSION_RATIO:
                     return True
-            elif left == right or (not left_word and not right_word):
-                return True
+            elif not left_word and not right_word:
+                if _generic_kinds(left) == _generic_kinds(right):
+                    return True
     return False
 
 
@@ -431,9 +452,11 @@ def _rejected_marker(source: SourceTrack, candidate: Candidate) -> str | None:
     """Finds a disqualifying word the source itself does not carry.
 
     Artist and title words are ignored, so the act Chain Reaction is not taken
-    for a reaction video. Words that usually mean a recording of a set or a gig
-    are forgiven when the length is within seconds of the source, because then
-    the upload is the record itself on a channel with that word in its title.
+    for a reaction video. The source title has to carry the marker as whole
+    words, so the title Alive does not excuse a live take. Words that usually
+    mean a recording of a set or a gig are forgiven when the length is within
+    seconds of the source, because then the upload is the record itself on a
+    channel with that word in its title.
 
     Args:
         source: Source track.
@@ -442,12 +465,12 @@ def _rejected_marker(source: SourceTrack, candidate: Candidate) -> str | None:
     Returns:
         The disqualifying word, or None.
     """
-    source_clean = clean(source.title)
+    source_words = f" {clean(source.title)} "
     text = f" {clean(candidate.raw_title)} "
     for credit in source.artists:
         text = text.replace(f" {clean(DISAMBIGUATION.sub('', credit))} ", " ")
     for found in REJECT_MARKERS.finditer(text):
-        if found[0] not in source_clean:
+        if f" {found[0]} " not in source_words:
             return found[0]
     close = (
         source.duration_ms
@@ -456,7 +479,7 @@ def _rejected_marker(source: SourceTrack, candidate: Candidate) -> str | None:
     )
     if not close:
         for found in SOFT_MARKERS.finditer(text):
-            if found[0] not in source_clean:
+            if f" {found[0]} " not in source_words:
                 return found[0]
     return None
 

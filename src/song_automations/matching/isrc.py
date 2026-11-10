@@ -14,9 +14,10 @@ from song_automations.matching.matcher import (
     decide,
     normalize_isrc,
 )
-from song_automations.matching.resolver import SearchCache, search_title
+from song_automations.matching.resolver import SearchCache, query_title, unquoted
 
 MAX_VERSIONS = 3
+MAX_ERRORS_IN_A_ROW = 3
 PLATFORM = "deezer"
 
 logger = logging.getLogger(__name__)
@@ -66,13 +67,18 @@ class IsrcFinder:
         self._client = client
         self._cache = cache
         self._failed = False
+        self._errors = 0
 
     def find(self, source: SourceTrack, artist: str) -> dict[str, int | None]:
         """Lists the recording codes of a track with the length of each recording.
 
         A catalogue that cannot be reached costs coverage, never correctness,
         so the failure is logged once and the sync carries on without codes.
-        An error about one track only skips that track.
+        An error about one track only skips that track, but several bad
+        answers in a row mean the catalogue itself is broken, and the lookups
+        stop for the run. A failed lookup is never remembered. An answer is
+        remembered per artist, title and credited remixers, so a remix that
+        Discogs names only in its credits never gets the codes of the original.
 
         Args:
             source: Source track.
@@ -82,7 +88,7 @@ class IsrcFinder:
             Length in milliseconds by code for the exact version, empty when
             the catalogue lacks it.
         """
-        key = f"isrc:{artist}|{source.title}"
+        key = "|".join([f"isrc:{artist}", source.title, *source.remixers])
         stored = self._cache.get_search_cache(PLATFORM, key)
         if stored is not None:
             return dict(stored)
@@ -95,8 +101,16 @@ class IsrcFinder:
             logger.warning("Recording codes are unavailable for this run: %s", error)
             return {}
         except DeezerError as error:
+            self._errors += 1
             logger.warning("No recording code for %s - %s: %s", artist, source.title, error)
+            if self._errors >= MAX_ERRORS_IN_A_ROW:
+                self._failed = True
+                logger.warning(
+                    "Recording codes are unavailable for this run: %d bad answers in a row",
+                    self._errors,
+                )
             return {}
+        self._errors = 0
         self._cache.save_search_cache(PLATFORM, key, codes)
         return dict(codes)
 
@@ -108,11 +122,15 @@ class IsrcFinder:
             artist: Artist to search for.
 
         Returns:
-            Pairs of code and length, best version first.
+            Pairs of code and length, best version first. Nothing is searched
+            when the artist or the title has no text, since an empty field
+            would match any track.
         """
-        title = search_title(source.title)
+        name, title = unquoted(artist), query_title(source.title)
+        if not name or not title:
+            return []
         seen: dict[str, Candidate] = {}
-        for query in (f'artist:"{artist}" track:"{title}"', f"{artist} {title}"):
+        for query in (f'artist:"{name}" track:"{title}"', f"{name} {title}"):
             for item in self._client.search_raw(query):
                 seen.setdefault(str(item.get("id")), deezer_candidate(item))
         decision = decide(source, seen.values())

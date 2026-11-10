@@ -44,11 +44,14 @@ class FakeCatalogue:
         results: Tracks every search returns.
         codes: Recording code by track id.
         error: Raised by every request when set.
+        broken: Titles whose searches get a bad answer.
     """
 
-    def __init__(self, results=(), codes=None, error=None) -> None:
+    def __init__(self, results=(), codes=None, error=None, broken=()) -> None:
         self.results, self.codes, self.error = list(results), codes or {}, error
+        self.broken = set(broken)
         self.calls = 0
+        self.queries = []
 
     def search_raw(self, query):
         """Searches.
@@ -58,10 +61,16 @@ class FakeCatalogue:
 
         Returns:
             Tracks.
+
+        Raises:
+            DeezerError: If the query is for a broken title.
         """
         self.calls += 1
+        self.queries.append(query)
         if self.error:
             raise self.error
+        if any(title in query for title in self.broken):
+            raise DeezerError("answer is not JSON")
         return self.results
 
     def track_raw(self, track_id):
@@ -148,3 +157,67 @@ def test_error_about_one_track_only_skips_that_track(error):
     assert finder.find(SourceTrack(("Bicep",), "Opal"), "Bicep") == {}
     assert catalogue.calls == 2
     assert cache.data == {}
+
+
+@pytest.mark.parametrize(
+    ("artist", "title", "expected"),
+    [
+        ("Bicep", "Glue (Original Mix)", ['artist:"Bicep" track:"Glue"', "Bicep Glue"]),
+        (
+            'Lee "Scratch" Perry',
+            "Dreadlocks In Moonlight",
+            ['artist:"Lee Scratch Perry" track:"Dreadlocks In Moonlight"', "Lee Scratch Perry Dreadlocks In Moonlight"],
+        ),
+        ("David Bowie", '"Heroes"', ['artist:"David Bowie" track:"Heroes"', "David Bowie Heroes"]),
+        ("Burial", "(Untitled)", ['artist:"Burial" track:"(Untitled)"', "Burial (Untitled)"]),
+        ("Bicep", '""', []),
+        ("", "Glue", []),
+    ],
+)
+def test_catalogue_query_fields_are_never_broken_or_empty(artist, title, expected):
+    """Quotes are dropped from both fields, and nothing is searched when a field would be empty."""
+    catalogue = FakeCatalogue()
+    assert IsrcFinder(catalogue, MemoryCache()).find(SourceTrack((artist,), title), artist) == {}
+    assert catalogue.queries == expected
+
+
+@pytest.mark.parametrize(
+    ("broken", "order", "calls", "remembered", "last"),
+    [
+        ({"Glue", "Opal", "Rain"}, ["Glue", "Opal", "Rain", "Apricots"], 3, 0, {}),
+        ({"Glue", "Opal", "Rain"}, ["Glue", "Opal", "Rain", "Atlas", "Aura", "Apricots"], 3, 0, {}),
+        ({"Glue", "Opal"}, ["Glue", "Opal", "Apricots"], 5, 1, {"GBCFB2000123": 300_000}),
+        (
+            {"Glue", "Opal", "Atlas", "Aura"},
+            ["Glue", "Opal", "Rain", "Atlas", "Aura", "Apricots"],
+            9,
+            2,
+            {"GBCFB2000123": 300_000},
+        ),
+    ],
+)
+def test_three_bad_answers_in_a_row_switch_the_lookups_off(broken, order, calls, remembered, last):
+    """A broken catalogue is given up on after three tracks, a good answer restarts the count and no failure is stored."""
+    catalogue = FakeCatalogue([entry(1, "Apricots")], {"1": "GBCFB2000123"}, broken=broken)
+    cache = MemoryCache()
+    finder = IsrcFinder(catalogue, cache)
+    found = [finder.find(SourceTrack(("Bicep",), title), "Bicep") for title in order]
+    assert (catalogue.calls, len(cache.data), found[-1]) == (calls, remembered, last)
+    assert all(found[index] == {} for index, title in enumerate(order) if title in broken)
+
+
+@pytest.mark.parametrize(
+    "order",
+    [
+        [(), ("Four Tet",)],
+        [("Four Tet",), ()],
+        [(), ("Four Tet",), (), ("Four Tet",)],
+    ],
+)
+def test_remix_named_only_in_the_credits_never_gets_the_code_of_the_original(order):
+    """The remembered answer for a title is not reused for the same title with a credited remixer."""
+    catalogue, cache = FakeCatalogue([entry(1, "Opal")], {"1": "GBCFB2000111"}), MemoryCache()
+    finder = IsrcFinder(catalogue, cache)
+    found = [finder.find(SourceTrack(("Bicep",), "Opal", remixers=remixers), "Bicep") for remixers in order]
+    assert found == [{} if remixers else {"GBCFB2000111": 300_000} for remixers in order]
+    assert len(cache.data) == 2
