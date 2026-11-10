@@ -15,7 +15,7 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from song_automations.clients.http import DEFAULT_TIMEOUT, RETRYABLE_EXCEPTIONS, handle_rate_limit
 from song_automations.config import Settings
-from song_automations.errors import LoginFailedError, LoginTimeoutError
+from song_automations.errors import LoginFailedError, LoginTimeoutError, UnattendedLoginError
 from song_automations.matching.matcher import clean
 
 EVERY_ACCESS = "playable,preview,blocked"
@@ -222,6 +222,8 @@ class SoundCloudClient:
         """Opens the SoundCloud approval page in the browser and waits for the approval.
 
         The saved login is not consulted, and it stays in place until the new one is saved.
+        Asking for a login by name means someone is there, so the page opens
+        even when the settings say the run is unattended.
 
         Raises:
             LoginTimeoutError: When the page is not approved in time.
@@ -229,7 +231,7 @@ class SoundCloudClient:
         """
         self._access_token = None
         self._user_id = None
-        self.authenticate()
+        self._authorize()
 
     def _wait_for_code(self, port: int, auth_url: str) -> str:
         """Opens the approval page and waits for SoundCloud to send the browser back.
@@ -267,15 +269,26 @@ class SoundCloudClient:
         return code
 
     def authenticate(self) -> None:
-        """Perform OAuth 2.1 authentication flow.
+        """Makes sure a login is there, asking the browser when none is.
 
         Raises:
+            UnattendedLoginError: When a login is needed and the run is unattended.
             LoginTimeoutError: When the page is not approved in time.
             LoginFailedError: When SoundCloud refuses the login.
         """
         if self._access_token:
             return
+        if self._settings.unattended:
+            raise UnattendedLoginError(PLATFORM)
+        self._authorize()
 
+    def _authorize(self) -> None:
+        """Performs the OAuth 2.1 flow in the browser and saves the login.
+
+        Raises:
+            LoginTimeoutError: When the page is not approved in time.
+            LoginFailedError: When SoundCloud refuses the login.
+        """
         code_verifier, code_challenge = self._generate_pkce()
 
         parsed_redirect = urlparse(self._settings.soundcloud_redirect_uri)

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
         soundcloud_gated_tracks: Whether SoundCloud tracks the account cannot play in full may match.
         spotify_search_budget: Spotify searches one run may make.
         login_wait_seconds: Seconds to wait for a login page to be approved in the browser.
+        unattended: Whether nobody is there to approve a login page, so none may be opened.
         high_confidence: Threshold for high confidence matches (auto-add).
         log_level: Logging level for file output.
     """
@@ -96,6 +97,10 @@ class Settings(BaseSettings):
         default=600,
         ge=1,
         description="Seconds to wait for a platform login page to be approved in the browser",
+    )
+    unattended: bool = Field(
+        default=False,
+        description="Never open a browser or wait for one; stop with a message when a login is needed",
     )
     high_confidence: float = Field(
         default=0.50,

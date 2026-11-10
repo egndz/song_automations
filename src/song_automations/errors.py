@@ -77,6 +77,23 @@ class LoginFailedError(ReauthRequiredError):
         )
 
 
+class UnattendedLoginError(ReauthRequiredError):
+    """A run nobody is watching needs a login that only a browser can give.
+
+    Args:
+        platform: Platform name.
+    """
+
+    def __init__(self, platform: str) -> None:
+        super().__init__(
+            platform,
+            f"{platform} has no working saved login, and this unattended run may not open "
+            "a browser. Unfinished folders were left unchanged. Run "
+            f"'song-automations login {platform.lower()}' in a terminal and approve the "
+            f"{platform} page that opens. The next scheduled run then carries on by itself.",
+        )
+
+
 class SearchBudgetExhaustedError(RuntimeError):
     """A run used all the searches it may make, to stay under the platform quota.
 
