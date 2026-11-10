@@ -783,7 +783,7 @@ class StateTracker:
 
     def get_spotify_outcome(
         self, discogs_release_id: int, track_position: str, track_name: str
-    ) -> bool | None:
+    ) -> str | None:
         """Reads what Spotify answered when it was asked about a track.
 
         The stored decision has to be for the same title. One made for another
@@ -798,21 +798,22 @@ class StateTracker:
             track_name: Title the track has on Discogs now.
 
         Returns:
-            None when Spotify has not been asked about this title yet, True
-            when it carries the exact version, False when it was asked and has
-            only another version or nothing.
+            None when Spotify has not been asked about this title yet, an
+            empty string when it was asked and found nothing, otherwise the
+            tier of what it found: exact, original or other_mix.
         """
         with self._get_connection() as conn:
             row = conn.execute(
                 """
-                SELECT COALESCE(match_tier, 'exact') = 'exact' AND destination_track_id IS NOT NULL
+                SELECT CASE WHEN destination_track_id IS NULL THEN ''
+                            ELSE COALESCE(match_tier, 'exact') END
                 FROM matched_tracks
                 WHERE discogs_release_id = ? AND discogs_track_position = ?
                   AND track_name = ? AND destination = 'spotify'
                 """,
                 (discogs_release_id, track_position, track_name),
             ).fetchone()
-        return None if row is None else bool(row[0])
+        return None if row is None else str(row[0])
 
     def get_exact_spotify_recording(
         self, discogs_release_id: int, track_position: str, track_name: str

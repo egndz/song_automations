@@ -93,8 +93,8 @@ def test_wrong_candidates_are_refused(artist, title, candidate):
         ("Westcoast Goddess", "Change Is Comin'", soundcloud("PREMIERE: Westcoast Goddess - Change Is Comin [Intrinsic]", "Juno"), Tier.EXACT),
         ("Fio Fa", "In To Da Groove (New Jackson Remix)", soundcloud("Fio Fa - In To Da Groove (New Jackson Remix)", "Pear"), Tier.EXACT),
         ("Fio Fa", "In To Da Groove (New Jackson Remix)", spotify("In To Da Groove - New Jackson Mix", "Fio Fa"), Tier.EXACT),
-        ("Cyre", "Last Chance (Club Version)", soundcloud("CYRE - LAST CHANCE", "x"), Tier.ORIGINAL),
-        ("Bicep", "Opal", soundcloud("Bicep - Opal (Four Tet Remix)", "x"), Tier.OTHER_MIX),
+        ("Cyre", "Last Chance (Club Version)", soundcloud("CYRE - LAST CHANCE", "Cyre"), Tier.ORIGINAL),
+        ("Bicep", "Opal", soundcloud("Bicep - Opal (Four Tet Remix)", "Bicep"), Tier.OTHER_MIX),
         ("Dj Spooge", "Sit Yourself Down", soundcloud("Sit Yourself Down [LG001]", "DJ SPOOGE"), Tier.EXACT),
         ("Beyoncé", "Halo", spotify("Halo", "Beyonce"), Tier.EXACT),
         ("Model 500", "No UFOs", spotify("No UFO's", "Model500"), Tier.EXACT),
@@ -424,8 +424,43 @@ def test_spotify_candidate_reads_the_recording_code(item, expected):
 def test_clip_posted_under_the_code_of_the_full_track_is_refused(discogs_ms, catalogue_ms, upload_ms, access, accepted):
     """BICEP posts "GLUE // CLIP" with the code of Glue; the code is only trusted when the length fits."""
     source = SourceTrack(("Bicep",), "Glue", duration_ms=discogs_ms, fan_uploads=False, isrcs={"GBCFB1700229": catalogue_ms})
-    clip = catalogue_upload(title="BICEP | GLUE // CLIP", uploader="BICEP", isrc="GBCFB1700229", access=access, ms=upload_ms)
+    clip = catalogue_upload(title="BICEP | GLUE", uploader="BICEP", isrc="GBCFB1700229", access=access, ms=upload_ms)
     assert isinstance(evaluate(source, clip), Match) is accepted
+
+
+@pytest.mark.parametrize(
+    ("title", "accepted"),
+    [
+        ("Glue", True),
+        ("BICEP | GLUE", True),
+        ("Bicep - Glue (Remastered 2020)", True),
+        ("Glue X Say It Right X Relax My Eyes X REACT X WORK", False),
+        ("BICEP | GLUE // CLIP", False),
+        ("Opal", False),
+    ],
+)
+def test_recording_code_needs_the_title_too(title, accepted):
+    """A mashup tagged with the code of one of its songs is not that song."""
+    source = SourceTrack(("Bicep",), "Glue", duration_ms=269_000, fan_uploads=False, isrcs={"GBCFB1700229": 269_000})
+    upload = catalogue_upload(title=title, uploader="W3LLS", isrc="GBCFB1700229", access="playable", ms=270_000)
+    assert isinstance(evaluate(source, upload), Match) is accepted
+
+
+@pytest.mark.parametrize(
+    ("record", "upload", "uploader", "accepted"),
+    [
+        ("Wigan (Bass Mix)", "Baby Ford - Wigan (Bass Mix)", "Gaet", True),
+        ("Black Dog", "Led Zeppelin - Black Dog (Save the Robot Remix)", "Tineke Hamel", False),
+        ("Beach Bump (Colin Faver Edit)", "Baby Ford - Beach Bump", "Gaet", False),
+        ("Beach Bump (Colin Faver Edit)", "Baby Ford - Beach Bump", "Baby Ford", True),
+        ("Black Dog", "Led Zeppelin - Black Dog (Save the Robot Remix)", "Led Zeppelin", True),
+    ],
+)
+def test_stranger_upload_counts_only_as_the_exact_version(record, upload, uploader, accepted):
+    """A vinyl rip of the listed mix is fine; a stranger's remix or another cut never stands in."""
+    artist = upload.split(" - ")[0]
+    source = SourceTrack((artist,), record, duration_ms=300_000, fan_uploads=True)
+    assert isinstance(evaluate(source, soundcloud(upload, uploader, ms=301_000)), Match) is accepted
 
 
 @pytest.mark.parametrize(

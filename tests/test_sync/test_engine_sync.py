@@ -441,7 +441,7 @@ def store_spotify_decision(state, outcome, title="Glue"):
     [
         ("soundcloud", set(), "unknown", set(), False, 1),
         ("soundcloud", set(), "missing", set(), True, 1),
-        ("soundcloud", set(), "other_mix", set(), True, 1),
+        ("soundcloud", set(), "other_mix", set(), False, 1),
         ("soundcloud", set(), "original", set(), True, 1),
         ("soundcloud", set(), "exact", set(), False, 1),
         ("soundcloud", {"GBCFB1700231"}, "unknown", {"GBCFB1700231"}, False, 1),
@@ -562,7 +562,7 @@ def run_soundcloud(state, soundcloud, gated: bool, tracks=None):
     [
         ("unknown", {}, None, []),
         ("missing", {}, None, ["7"]),
-        ("other_mix", {}, None, ["7"]),
+        ("other_mix", {}, None, []),
         ("original", {}, None, ["7"]),
         ("exact", {}, None, []),
         ("unknown", {"GBCFB1700231": 300_000}, None, []),

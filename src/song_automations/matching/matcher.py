@@ -557,16 +557,19 @@ def _account_is(names: Iterable[str], account: str) -> bool:
     )
 
 
-def _fan_upload_unverified(source: SourceTrack, candidate: Candidate) -> bool:
+def _fan_upload_unverified(source: SourceTrack, candidate: Candidate, tier: Tier) -> bool:
     """Checks whether an upload by a stranger lacks the evidence that would confirm it.
 
     Uploads by the artist, the label or a remixer Discogs credits are trusted.
-    Anyone else's upload, including a self-made remix or edit, counts only for music Spotify does not carry
-    (vinyl rips of rare records), and only with a length that matches Discogs.
+    Anyone else's upload counts only for music Spotify does not carry (vinyl
+    rips of rare records), only as the exact version and only with a length
+    that matches Discogs. A stranger's upload never stands in as another
+    version, because that is where bootleg remixes and edits come in.
 
     Args:
         source: Source track.
         candidate: Candidate track.
+        tier: How closely the version of the candidate agrees.
 
     Returns:
         True when the candidate is an unconfirmed fan upload.
@@ -576,7 +579,7 @@ def _fan_upload_unverified(source: SourceTrack, candidate: Candidate) -> bool:
     if _account_is((*source.artists, *source.remixers, *source.labels), candidate.uploader):
         return False
     name = clean(candidate.uploader)
-    if not source.fan_uploads or COVER_ACCOUNT.search(name.replace(" ", "")):
+    if not source.fan_uploads or tier != Tier.EXACT or COVER_ACCOUNT.search(name.replace(" ", "")):
         return True
     if source.duration_ms and candidate.duration_ms:
         return abs(source.duration_ms - candidate.duration_ms) > DURATION_TOLERANCE_MS
@@ -617,6 +620,29 @@ def _is_cut(length: int | None, *full_lengths: int | None) -> bool:
     if not length:
         return False
     return any(full and abs(full - length) > DURATION_TOLERANCE_MS for full in full_lengths)
+
+
+def _titles_agree(source: SourceTrack, candidate: Candidate) -> bool:
+    """Checks that some reading of a candidate carries the title of the source.
+
+    Uploaders type recording codes in themselves, so a mashup can carry the
+    code of one of the songs in it. The code is only trusted together with
+    the title.
+
+    Args:
+        source: Source track.
+        candidate: Candidate track.
+
+    Returns:
+        True when a reading has the same base title as the source.
+    """
+    bases, _ = parse_title(source.title)
+    return any(
+        _same(a, b, TITLE_RATIO)
+        for reading in candidate.readings
+        for a in bases
+        for b in parse_title(reading.title)[0]
+    )
 
 
 def _same_recording(source: SourceTrack, candidate: Candidate) -> Match:
@@ -660,6 +686,8 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         failed gate.
     """
     if candidate.isrc and candidate.isrc in source.isrcs:
+        if not _titles_agree(source, candidate):
+            return Rejection(candidate, "isrc_title")
         if _is_cut(candidate.duration_ms, source.duration_ms, source.isrcs[candidate.isrc]):
             return Rejection(candidate, "isrc_length")
         return _same_recording(source, candidate)
@@ -695,7 +723,7 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         tier = Tier.OTHER_MIX
     elif duration_reason:
         return Rejection(candidate, duration_reason)
-    if _fan_upload_unverified(source, candidate):
+    if _fan_upload_unverified(source, candidate, tier):
         return Rejection(candidate, "fan_unverified")
     delta = (
         abs(source.duration_ms - candidate.duration_ms)
