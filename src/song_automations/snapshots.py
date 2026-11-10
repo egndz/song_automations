@@ -30,6 +30,8 @@ BEFORE_SYNC = "sync"
 BEFORE_DELETE = "delete"
 BEFORE_RESTORE = "restore"
 SPOTIFY = "spotify"
+PRIVATE_FOLDER = 0o700
+PRIVATE_FILE = 0o600
 
 _SHARED_RUN: ContextVar[dict[str, str] | None] = ContextVar("shared_snapshot_run", default=None)
 
@@ -200,6 +202,18 @@ class RestoreOutcome:
         return found
 
 
+def _clean(text: str) -> str:
+    """Makes text safe to write as UTF-8.
+
+    Args:
+        text: Text from a platform, which can hold half of a surrogate pair.
+
+    Returns:
+        The text with every character that cannot be encoded replaced by a question mark.
+    """
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 def name_of(playlist) -> str:
     """Reads the name of a playlist of either platform.
 
@@ -240,12 +254,12 @@ def _text(track, *attributes: str) -> str | None:
         *attributes: Attribute names to try in order.
 
     Returns:
-        The text, or None when the track carries none of them.
+        The text made safe to write, or None when the track carries none of them.
     """
     for attribute in attributes:
         value = getattr(track, attribute, None)
         if isinstance(value, str) and value:
-            return value
+            return _clean(value)
     return None
 
 
@@ -258,7 +272,9 @@ def saved_track(track) -> SavedTrack:
     Returns:
         The id with the title and artist when the track carries them.
     """
-    return SavedTrack(id=str(track.id), title=_text(track, "name", "title"), artist=_text(track, "artist"))
+    return SavedTrack(
+        id=_clean(str(track.id)), title=_text(track, "name", "title"), artist=_text(track, "artist")
+    )
 
 
 def safe_file_stem(name: str) -> str:
@@ -576,6 +592,22 @@ def prune_runs(root: Path, keep: int, protect: str | None = None) -> list[str]:
     return removed
 
 
+def _restrict(path: Path, mode: int) -> None:
+    """Limits a folder or file to its owner.
+
+    A disk that has no permissions to set is logged and otherwise ignored,
+    because a snapshot that exists matters more than who may read it.
+
+    Args:
+        path: Folder or file.
+        mode: Permission bits to set.
+    """
+    try:
+        path.chmod(mode)
+    except OSError:
+        logger.warning("Could not limit %s to its owner", path, exc_info=True)
+
+
 class SnapshotStore:
     """Writes the snapshots of one run.
 
@@ -641,12 +673,12 @@ class SnapshotStore:
         key = (platform, str(playlist.id))
         if key in self._saved:
             return self._saved[key]
-        name = name_of(playlist)
+        name = _clean(name_of(playlist))
         try:
             snapshot = Snapshot(
                 run_id=self.run_id,
                 platform=platform,
-                playlist_id=str(playlist.id),
+                playlist_id=_clean(str(playlist.id)),
                 playlist_name=name,
                 saved_at=datetime.now().isoformat(),
                 tracks=tuple(saved_track(track) for track in tracks),
@@ -667,6 +699,9 @@ class SnapshotStore:
     def _write(self, snapshot: Snapshot) -> Path:
         """Writes a snapshot to a new file and checks that it reads back the same.
 
+        The snapshot folders and the file are for their owner only, because
+        they list what a private playlist holds.
+
         Args:
             snapshot: The snapshot.
 
@@ -679,7 +714,9 @@ class SnapshotStore:
             SnapshotError: When the file cannot be read back.
         """
         folder = self.run_dir / snapshot.platform
-        folder.mkdir(parents=True, exist_ok=True)
+        for level in (self.root, self.run_dir, folder):
+            level.mkdir(mode=PRIVATE_FOLDER, parents=True, exist_ok=True)
+            _restrict(level, PRIVATE_FOLDER)
         stem = safe_file_stem(snapshot.playlist_name)
         path, attempt = folder / f"{stem}.json", 1
         while path.exists():
@@ -687,7 +724,9 @@ class SnapshotStore:
             path = folder / f"{stem}-{attempt}.json"
         temporary = path.with_name(f".{path.name}.tmp")
         try:
-            with temporary.open("w", encoding="utf-8") as handle:
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, PRIVATE_FILE)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                _restrict(temporary, PRIVATE_FILE)
                 json.dump(_to_json(snapshot), handle, ensure_ascii=False, indent=2)
                 handle.flush()
                 os.fsync(handle.fileno())
