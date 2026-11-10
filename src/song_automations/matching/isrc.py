@@ -1,6 +1,7 @@
 """Looks up the recording codes of a Discogs track in a catalogue that lists them."""
 
 import logging
+from dataclasses import replace
 from typing import Protocol
 
 import httpx
@@ -50,6 +51,59 @@ def deezer_candidate(item: dict) -> Candidate:
         duration_ms=seconds * 1000 or None,
         album=(item.get("album") or {}).get("title") or "",
     )
+
+
+class RecordingStore(Protocol):
+    """Stored Spotify matches, read for what they prove about a track."""
+
+    def get_exact_spotify_recording(
+        self, discogs_release_id: int, track_position: str, track_name: str
+    ) -> tuple[str, int | None] | None: ...
+
+    def has_exact_spotify_match(self, discogs_release_id: int, track_position: str) -> bool: ...
+
+
+def with_recording_evidence(
+    source: SourceTrack,
+    artist: str,
+    destination: str,
+    release_id: int,
+    position: str,
+    store: RecordingStore,
+    finder: "IsrcFinder | None",
+) -> SourceTrack:
+    """Adds what is known about the official release of a track to its source.
+
+    On SoundCloud the recording codes of the track are looked up first, so the
+    official upload is recognised whatever its account is called. The code of
+    an exact Spotify match counts too, which covers tracks the catalogue
+    lacks, and the length the catalogue lists wins when both know the code.
+    Fan uploads are allowed only for tracks no catalogue carries, which keeps
+    covers out. A sync and the review app both prepare their sources here, so
+    the review app offers what a sync would accept.
+
+    Args:
+        source: Source track built from Discogs.
+        artist: Artist name worth typing into a search box.
+        destination: Target platform, spotify or soundcloud.
+        release_id: Discogs release ID.
+        position: Track position on the release.
+        store: Stored Spotify matches.
+        finder: Looks up recording codes in a catalogue, None to skip that.
+
+    Returns:
+        The source with its recording codes and whether fan uploads may match.
+    """
+    isrcs: dict[str, int | None] = {}
+    if destination == "soundcloud":
+        carried = store.get_exact_spotify_recording(release_id, position, source.title)
+        code = normalize_isrc(carried[0]) if carried else ""
+        if code:
+            isrcs[code] = carried[1]
+        if finder is not None:
+            isrcs.update(finder.find(source, artist))
+    released = bool(isrcs) or store.has_exact_spotify_match(release_id, position)
+    return replace(source, isrcs=isrcs, fan_uploads=not released)
 
 
 class IsrcFinder:

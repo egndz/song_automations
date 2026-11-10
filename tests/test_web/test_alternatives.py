@@ -440,3 +440,28 @@ def test_pages_render(tmp_path, path, offers_alternatives):
     answer = review.client.get(path)
     assert answer.status_code == 200
     assert ('onclick="showAlternatives(' in answer.text) == offers_alternatives
+
+
+@pytest.mark.parametrize(
+    ("spotify_code", "spotify_tier", "spotify_title", "expected"),
+    [
+        ("GBABC1234567", "exact", "Glue", [("7", "exact")]),
+        ("gb-abc-12-34567", "exact", "Glue", [("7", "exact")]),
+        (None, "exact", "Glue", []),
+        ("GBABC1234567", "other_mix", "Glue", []),
+        ("GBABC1234567", "exact", "Opal", []),
+        ("GBXYZ7654321", "exact", "Glue", []),
+    ],
+)
+def test_soundcloud_alternatives_use_the_code_of_the_spotify_match(
+    tmp_path, spotify_code, spotify_tier, spotify_title, expected
+):
+    """The route accepts what a sync accepts: an upload proven by the code of the exact Spotify match."""
+    upload = soundcloud_item(7, "Bicep - Glue", "Some Distributor", isrc="GB-ABC-12-34567")
+    review = Review(tmp_path, soundcloud=FakePlatform([upload]), finder=FakeFinder({}))
+    review.state.save_matched_track(
+        1, "A1", "Bicep", spotify_title, "spotify", "sp1", 0.95,
+        match_tier=spotify_tier, matched_duration_ms=200000, matched_isrc=spotify_code,
+    )
+    body = review.alternatives(review.add(destination="soundcloud", matched="7")).json()
+    assert [(entry["track_id"], entry["tier"]) for entry in body["alternatives"]] == expected

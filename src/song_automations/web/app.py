@@ -2,7 +2,6 @@
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,7 +21,7 @@ from song_automations.errors import (
     ReauthRequiredError,
     SearchBudgetExhaustedError,
 )
-from song_automations.matching.isrc import IsrcFinder
+from song_automations.matching.isrc import IsrcFinder, with_recording_evidence
 from song_automations.matching.matcher import Match, SourceTrack, decide
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
@@ -538,13 +537,15 @@ def create_app(
             raise HTTPException(status_code=500, detail=f"Failed to initialize client: {error}") from error
 
         source, artist = build_source(track, tracks)
-        isrcs: dict[str, int | None] = {}
-        if track.destination == "soundcloud":
-            isrcs = finder.find(source, artist)
-        released = bool(isrcs) or tracker.has_exact_spotify_match(
-            track.discogs_release_id, track.discogs_track_position
+        source = with_recording_evidence(
+            source,
+            artist,
+            track.destination,
+            track.discogs_release_id,
+            track.discogs_track_position,
+            tracker,
+            finder,
         )
-        source = replace(source, isrcs=isrcs, fan_uploads=not released)
 
         queries = alternative_queries(searcher, artist, source.title)
         refused = tracker.get_rejected_ids(
