@@ -14,6 +14,7 @@ from song_automations.errors import (
     SearchBudgetExhaustedError,
     UnattendedLoginError,
 )
+from song_automations.snapshots import SnapshotError
 
 NOW = datetime(2026, 11, 10, 4, 30)
 
@@ -99,10 +100,11 @@ def test_failing_notification_never_fails_the_run(failure):
         (LoginFailedError("SoundCloud", "invalid_client"), ["song-automations login soundcloud"]),
         (RateLimitedError("Spotify", 3600), ["Spotify", "until 2026-11-10 05:30"]),
         (RateLimitedError("SoundCloud", 86400), ["SoundCloud", "until 2026-11-11 04:30"]),
+        (SnapshotError("disk full"), ["could not save a playlist", "left as it was", "log"]),
     ],
 )
 def test_message_says_what_to_do(error, parts):
-    """A login problem names the command to run, a rate limit says until when."""
+    """A login problem names the command to run, a rate limit says until when, a failed snapshot points at the log."""
     message = notify.attention_message(error, now=NOW)
     assert all(part in message for part in parts)
 
