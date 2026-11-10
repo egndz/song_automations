@@ -11,9 +11,13 @@ from song_automations.clients.spotify import (
     SpotifyClient,
     SpotifyPlaylist,
     SpotifyTrack,
+    TimedSpotifyOAuth,
     retry_after_seconds,
 )
+from song_automations.config import Settings
 from song_automations.errors import (
+    LoginFailedError,
+    LoginTimeoutError,
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
@@ -381,3 +385,222 @@ class TestRetryAfterHeader:
         ]
         assert client.search_raw("q") == [{"id": "1"}]
         assert DEFAULT_RETRY_AFTER_SECONDS + 1 in slept
+
+
+class TestSpotifyLogin:
+    """Logging in from the browser and replacing a saved login Spotify refuses."""
+
+    @staticmethod
+    def _client(tmp_path, monkeypatch, saved=True):
+        """Builds a client whose spotipy and login are fakes, so nothing leaves the machine.
+
+        Args:
+            tmp_path: Folder standing in for the data directory.
+            monkeypatch: Pytest monkeypatch.
+            saved: Whether a saved login exists.
+
+        Returns:
+            The client.
+        """
+        monkeypatch.setattr("song_automations.clients.spotify.time.sleep", lambda _: None)
+        settings = Settings(
+            spotify_client_id="id", spotify_client_secret="secret", data_dir=tmp_path
+        )
+        client = SpotifyClient(settings)
+        client._client = MagicMock()
+        client._auth = MagicMock()
+        if saved:
+            client._cache_path.write_text("old login")
+            client._cache_path.chmod(0o644)
+
+        def approve(**kwargs):
+            """Stands in for an approved browser login.
+
+            Args:
+                **kwargs: Options spotipy would get.
+
+            Returns:
+                A token.
+            """
+            client._cache_path.write_text("new login")
+            client._cache_path.chmod(0o644)
+            return "token"
+
+        client._auth.get_access_token.side_effect = approve
+        return client
+
+    @pytest.mark.parametrize("code", ["invalid_client", "invalid_grant"])
+    def test_refused_saved_login_is_set_aside_and_replaced(self, tmp_path, monkeypatch, code):
+        """A login saved for another app is renamed, a new one is asked for, and the call goes on."""
+        client = self._client(tmp_path, monkeypatch)
+        client._client.search.side_effect = [
+            SpotifyOauthError(f"error: {code}", error=code),
+            {"tracks": {"items": [{"id": "1"}]}},
+        ]
+        assert client.search_raw("q") == [{"id": "1"}]
+        stale = tmp_path / ".spotify_cache.stale"
+        assert stale.read_text() == "old login"
+        assert client._cache_path.read_text() == "new login"
+        assert stale.stat().st_mode & 0o777 == 0o600
+        assert client._cache_path.stat().st_mode & 0o777 == 0o600
+        client._auth.get_access_token.assert_called_once_with(as_dict=False, check_cache=False)
+
+    @pytest.mark.parametrize("code", ["invalid_client", "invalid_grant"])
+    def test_login_refused_twice_stops_instead_of_looping(self, tmp_path, monkeypatch, code):
+        """When the new login is refused too, the run stops with a plain message."""
+        client = self._client(tmp_path, monkeypatch)
+        client._client.search.side_effect = SpotifyOauthError(f"error: {code}", error=code)
+        with pytest.raises(ReauthRequiredError):
+            client.search_raw("q")
+        assert client._client.search.call_count == 2
+        assert client._auth.get_access_token.call_count == 1
+
+    @pytest.mark.parametrize("code", [None, "server_error", "access_denied"])
+    def test_other_login_errors_leave_the_saved_login_alone(self, tmp_path, monkeypatch, code):
+        """Only a refused saved login is replaced, any other login error is just reported."""
+        client = self._client(tmp_path, monkeypatch)
+        client._client.search.side_effect = SpotifyOauthError("failed", error=code)
+        with pytest.raises(ReauthRequiredError):
+            client.search_raw("q")
+        assert client._cache_path.read_text() == "old login"
+        assert not (tmp_path / ".spotify_cache.stale").exists()
+        assert client._auth.get_access_token.call_count == 0
+
+    @pytest.mark.parametrize("saved", [True, False])
+    def test_login_asks_the_browser_even_with_a_saved_login(self, tmp_path, monkeypatch, saved):
+        """Logging in never trusts the saved login and leaves the new one private."""
+        client = self._client(tmp_path, monkeypatch, saved=saved)
+        client.login()
+        client._auth.get_access_token.assert_called_once_with(as_dict=False, check_cache=False)
+        assert client._cache_path.stat().st_mode & 0o777 == 0o600
+        assert not (tmp_path / ".spotify_cache.stale").exists()
+
+    @pytest.mark.parametrize(
+        ("raised", "expected"),
+        [
+            (SpotifyOauthError("error: invalid_client", error="invalid_client"), LoginFailedError),
+            (SpotifyOauthError("Received error from auth server: access_denied"), LoginFailedError),
+            (OSError("Address already in use"), LoginFailedError),
+            (LoginTimeoutError("Spotify", 600), LoginTimeoutError),
+        ],
+    )
+    def test_failed_login_is_explained(self, tmp_path, monkeypatch, raised, expected):
+        """A refused, impossible or unanswered login becomes a message that names the command."""
+        client = self._client(tmp_path, monkeypatch)
+        client._auth.get_access_token.side_effect = raised
+        with pytest.raises(expected) as caught:
+            client.login()
+        assert "song-automations login spotify" in str(caught.value)
+        assert isinstance(caught.value, ReauthRequiredError)
+        assert client._cache_path.read_text() == "old login"
+
+    @pytest.mark.parametrize("wait", [1, 600, 1800])
+    def test_wait_comes_from_the_settings(self, tmp_path, wait):
+        """The client waits for the approval as long as the settings say."""
+        settings = Settings(
+            spotify_client_id="id",
+            spotify_client_secret="secret",
+            data_dir=tmp_path,
+            login_wait_seconds=wait,
+        )
+        client = SpotifyClient(settings)
+        assert isinstance(client._auth, TimedSpotifyOAuth)
+        assert client._auth._wait_seconds == wait
+
+
+class FakeCallbackServer:
+    """Local server that never touches the network.
+
+    Args:
+        answers: What each handled request brings, as (code, error) pairs.
+        clock: Shared fake clock, advanced by a second per handled request.
+    """
+
+    def __init__(self, answers, clock):
+        self.auth_code = None
+        self.error = None
+        self.timeout = None
+        self.closed = False
+        self.timeouts = []
+        self._answers = list(answers)
+        self._clock = clock
+
+    def handle_request(self):
+        """Handles one request, or lets a second pass when none is left."""
+        self.timeouts.append(self.timeout)
+        self._clock[0] += 1
+        if self._answers:
+            self.auth_code, self.error = self._answers.pop(0)
+
+    def server_close(self):
+        """Records that the port was released."""
+        self.closed = True
+
+
+class TestTimedSpotifyOAuth:
+    """The wait for the Spotify approval page ends."""
+
+    @staticmethod
+    def _auth(tmp_path, monkeypatch, answers, wait):
+        """Builds a login whose browser, clock and local server are fakes.
+
+        Args:
+            tmp_path: Folder for the saved login.
+            monkeypatch: Pytest monkeypatch.
+            answers: What each handled request brings, as (code, error) pairs.
+            wait: Seconds to wait for the approval.
+
+        Returns:
+            The login and its fake server.
+        """
+        clock = [0.0]
+        server = FakeCallbackServer(answers, clock)
+        monkeypatch.setattr("song_automations.clients.spotify.time.monotonic", lambda: clock[0])
+        monkeypatch.setattr(
+            "song_automations.clients.spotify.start_local_http_server", lambda port: server
+        )
+        auth = TimedSpotifyOAuth(
+            wait_seconds=wait,
+            client_id="id",
+            client_secret="secret",
+            redirect_uri="http://127.0.0.1:8888/callback",
+            cache_path=str(tmp_path / "cache"),
+        )
+        monkeypatch.setattr(auth, "_open_auth_url", lambda: None)
+        return auth, server
+
+    @pytest.mark.parametrize(
+        ("answers", "handled"),
+        [
+            ([("code-1", None)], 1),
+            ([(None, None), ("code-1", None)], 2),
+            ([(None, None), (None, None), ("code-1", None)], 3),
+        ],
+    )
+    def test_code_is_returned_once_the_page_is_approved(self, tmp_path, monkeypatch, answers, handled):
+        """Stray requests are skipped until the approval arrives, then the port is released."""
+        auth, server = self._auth(tmp_path, monkeypatch, answers, wait=10)
+        assert auth._get_auth_response_local_server(8888) == "code-1"
+        assert len(server.timeouts) == handled
+        assert server.closed
+
+    @pytest.mark.parametrize("wait", [1, 3, 600])
+    def test_unanswered_page_times_out(self, tmp_path, monkeypatch, wait):
+        """Nobody approving ends the wait with a plain message after the configured time."""
+        auth, server = self._auth(tmp_path, monkeypatch, [], wait=wait)
+        with pytest.raises(LoginTimeoutError) as caught:
+            auth._get_auth_response_local_server(8888)
+        assert f"{wait} seconds" in str(caught.value)
+        assert server.timeouts[0] == wait
+        assert len(server.timeouts) == wait
+        assert server.closed
+
+    @pytest.mark.parametrize("reason", ["access_denied", "server_error"])
+    def test_refusal_on_the_page_is_raised(self, tmp_path, monkeypatch, reason):
+        """Refusing on the page is reported as what it is, not as a timeout."""
+        refusal = SpotifyOauthError(f"Received error from auth server: {reason}", error=reason)
+        auth, server = self._auth(tmp_path, monkeypatch, [(None, refusal)], wait=10)
+        with pytest.raises(SpotifyOauthError) as caught:
+            auth._get_auth_response_local_server(8888)
+        assert caught.value.error == reason
+        assert server.closed
