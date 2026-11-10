@@ -467,14 +467,27 @@ def create_app(
         return RedirectResponse(url="/", status_code=303)
 
     @app.post("/approve-all")
-    async def approve_all(destination: str | None = None):
-        """Approve all currently displayed tracks."""
+    async def approve_all(destination: str | None = None, track_ids: list[int] = Form(default=[])):
+        """Approves the matches the page was showing when the button was pressed.
+
+        Only the posted ids are approved, and only while they are still
+        flagged, so matches on other pages or added since are never approved
+        unseen.
+
+        Args:
+            destination: Platform filter the page was using.
+            track_ids: Ids of the matches shown on the page.
+
+        Returns:
+            Redirect to the review page.
+        """
+        shown = set(track_ids)
         flagged = tracker.get_flagged_tracks(
             high_confidence=settings.high_confidence,
             destination=destination,
         )
         for track in flagged:
-            if track.id:
+            if track.id in shown:
                 tracker.update_review_status(track.id, "approved")
         return RedirectResponse(url="/", status_code=303)
 

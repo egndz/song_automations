@@ -592,7 +592,8 @@
             </div>
             {% if tracks_with_info %}
             <form action="/approve-all{% if destination_filter %}?destination={{ destination_filter }}{% endif %}" method="post" style="margin-left: auto;">
-                <button type="submit" class="bulk-btn">Approve All ({{ tracks_with_info|length }})</button>
+                {% for item in tracks_with_info %}<input type="hidden" name="track_ids" value="{{ item.track.id }}">{% endfor %}
+                <button type="submit" class="bulk-btn">Approve these {{ tracks_with_info|length }}</button>
             </form>
             {% endif %}
         </div>

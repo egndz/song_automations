@@ -521,9 +521,33 @@ def test_review_page_lists_what_a_sync_flags(tmp_path, tier, confidence, label):
     assert ("No tracks need review" in page) != listed
     labels = ("Another mix of the song", "Original mix, not the listed version")
     assert [text for text in labels if text in page] == ([label] if label else [])
-    assert review.client.post("/approve-all", follow_redirects=False).status_code == 303
+    shown = {"track_ids": [review.state.get_cached_match(1, "A1", "spotify").id]}
+    assert review.client.post("/approve-all", data=shown, follow_redirects=False).status_code == 303
     assert review.state.get_cached_match(1, "A1", "spotify").review_status == ("approved" if listed else "pending")
     assert "No tracks need review" in review.client.get("/").text
+
+
+@pytest.mark.parametrize(("flagged", "posted", "approved"), [(12, 10, 10), (12, 0, 0), (3, 3, 3), (3, 1, 1)])
+def test_approve_all_only_approves_what_the_page_showed(tmp_path, flagged, posted, approved):
+    """Matches on other pages, or never posted, stay unreviewed."""
+    review = Review(tmp_path)
+    for number in range(flagged):
+        review.state.save_matched_track(1, f"A{number}", "Bicep", f"Glue {number}", "spotify", f"t{number}", 0.55, "other_mix")
+    ids = [review.state.get_cached_match(1, f"A{number}", "spotify").id for number in range(flagged)]
+    review.client.post("/approve-all", data={"track_ids": ids[:posted]}, follow_redirects=False)
+    statuses = [review.state.get_cached_match(1, f"A{number}", "spotify").review_status for number in range(flagged)]
+    assert statuses.count("approved") == approved
+    assert statuses[:posted] == ["approved"] * posted
+
+
+@pytest.mark.parametrize("tier", ["exact"])
+def test_approve_all_ignores_an_id_that_is_not_flagged(tmp_path, tier):
+    """A posted id of a match that needs no review is left alone."""
+    review = Review(tmp_path)
+    review.state.save_matched_track(1, "A1", "Bicep", "Glue", "spotify", "t1", 0.95, tier)
+    row = review.state.get_cached_match(1, "A1", "spotify")
+    review.client.post("/approve-all", data={"track_ids": [row.id]}, follow_redirects=False)
+    assert review.state.get_cached_match(1, "A1", "spotify").review_status == "pending"
 
 
 @pytest.mark.parametrize(

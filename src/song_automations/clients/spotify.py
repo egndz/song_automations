@@ -2,6 +2,8 @@
 
 import json
 import logging
+import math
+import os
 import sys
 import time
 from dataclasses import dataclass, field
@@ -88,10 +90,17 @@ class SearchLedger:
             return []
         if not isinstance(stored, list):
             return []
-        return [float(moment) for moment in stored if isinstance(moment, int | float)]
+        return [
+            float(moment)
+            for moment in stored
+            if isinstance(moment, int | float) and not isinstance(moment, bool) and math.isfinite(moment)
+        ]
 
     def recent(self, now: float) -> int:
         """Counts the searches of the last 24 hours and forgets older ones.
+
+        The file is read again each time, so a review page and a scheduled
+        sync running together share one count.
 
         Args:
             now: Current time in seconds since the epoch.
@@ -99,18 +108,29 @@ class SearchLedger:
         Returns:
             Number of searches inside the window.
         """
-        self._times = [moment for moment in self._times if now - moment < SEARCH_WINDOW_SECONDS]
+        known = set(self._times) | set(self._load())
+        self._times = sorted(moment for moment in known if now - moment < SEARCH_WINDOW_SECONDS)
         return len(self._times)
 
     def record(self, now: float) -> None:
         """Notes one search and stores the list.
 
+        The list is written to a temporary file and moved into place, so a
+        crash cannot leave a half-written count, and a disk that cannot be
+        written to costs the stored count, not the run.
+
         Args:
             now: Current time in seconds since the epoch.
         """
         self._times.append(now)
-        if self._path is not None:
-            self._path.write_text(json.dumps([round(moment) for moment in self._times]))
+        if self._path is None:
+            return
+        scratch = self._path.with_name(f"{self._path.name}.tmp")
+        try:
+            scratch.write_text(json.dumps(self._times))
+            os.replace(scratch, self._path)
+        except OSError as error:
+            logger.warning("Could not store the Spotify search count: %s", error)
 
     def frees_at(self) -> float | None:
         """Tells when the oldest search leaves the window.
