@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from song_automations import notify
+from song_automations import notify, schedule
 from song_automations.config import Settings
 
 
@@ -27,7 +27,7 @@ def isolated_settings(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def no_real_system_commands(monkeypatch) -> None:
-    """Keeps every test from showing a real desktop notification.
+    """Keeps every test from showing a real desktop notification or touching launchd.
 
     Args:
         monkeypatch: Pytest monkeypatch.
@@ -45,6 +45,7 @@ def no_real_system_commands(monkeypatch) -> None:
         raise AssertionError(f"a test tried to run a real command: {command}")
 
     monkeypatch.setattr(notify, "_run_command", refuse)
+    monkeypatch.setattr(schedule, "_run_command", refuse)
 
 
 @pytest.fixture

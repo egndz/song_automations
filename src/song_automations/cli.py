@@ -28,6 +28,7 @@ from song_automations.matching.isrc import IsrcFinder
 from song_automations.notify import notify_attention
 from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
+from song_automations.schedule import schedule_app
 from song_automations.state.tracker import StateTracker
 from song_automations.sync.engine import OperationType, SyncEngine, SyncResult
 from song_automations.want.sync import sync_want_playlist
@@ -43,6 +44,7 @@ want_app = typer.Typer(help="Turn the Want playlist into Discogs wantlist entrie
 app.add_typer(sync_app, name="sync")
 app.add_typer(report_app, name="report")
 app.add_typer(want_app, name="want")
+app.add_typer(schedule_app, name="schedule")
 
 console = Console()
 logger = logging.getLogger(__name__)
