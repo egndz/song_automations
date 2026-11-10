@@ -17,6 +17,7 @@ from song_automations.matching.matcher import (
     parse_title,
     soundcloud_candidate,
     soundcloud_readings,
+    split_artists,
     spotify_candidate,
 )
 
@@ -114,6 +115,26 @@ def test_marker_is_forgiven_when_source_title_carries_it():
     assert isinstance(outcome, Match)
 
 
+@pytest.mark.parametrize(
+    ("artist", "title", "candidate", "accepted"),
+    [
+        ("Pearl Jam", "Alive", spotify("Alive (Live)", "Pearl Jam"), False),
+        ("Pink Floyd", "Eclipse", soundcloud("Pink Floyd - Eclipse (Clip)", "Pink Floyd"), False),
+        ("The Rolling Stones", "Undercover Of The Night", spotify("Undercover Of The Night (Cover)", "The Rolling Stones"), False),
+        ("Marina", "Obsessions", spotify("Obsessions - BBC Sessions", "Marina"), False),
+        ("Big Daddy Kane", "Special Delivery", spotify("Special Delivery - Live", "Big Daddy Kane"), False),
+        ("Oasis", "Live Forever", spotify("Live Forever - Live at Knebworth", "Oasis"), False),
+        ("The Who", "Substitute (Live At Leeds)", spotify("Substitute - Live At Leeds", "The Who"), True),
+        ("Nirvana", "About A Girl (MTV Unplugged)", spotify("About A Girl - MTV Unplugged", "Nirvana"), True),
+        ("Pearl Jam", "Alive (Live)", spotify("Alive - Live", "Pearl Jam"), True),
+        ("Pearl Jam", "Alive", spotify("Alive", "Pearl Jam"), True),
+    ],
+)
+def test_marker_is_excused_only_by_the_same_whole_words(artist, title, candidate, accepted):
+    """A title that merely contains the letters of a marker does not excuse it."""
+    assert isinstance(evaluate(SourceTrack((artist,), title), candidate), Match) is accepted
+
+
 @pytest.mark.parametrize(("delta", "accepted"), [(1_000, True), (60_000, False)])
 def test_gig_word_is_forgiven_only_at_the_same_length(delta, accepted):
     """A label channel named after a venue is fine if the length is the record's."""
@@ -149,6 +170,44 @@ def test_different_length_of_same_named_version_drops_a_tier():
 def test_classify_tier(source, candidate, tier):
     """The version ladder follows the agreed preference."""
     assert classify_tier(source, candidate) == tier
+
+
+@pytest.mark.parametrize(
+    ("title", "candidate", "tier"),
+    [
+        ("Glue (Remix)", "Glue - Remix", Tier.EXACT),
+        ("Glue (Remix)", "Glue (RMX)", Tier.EXACT),
+        ("Glue (Remix)", "Glue (Remix Version)", Tier.EXACT),
+        ("Glue (Edit)", "Glue (Reedit)", Tier.EXACT),
+        ("Glue (Version)", "Glue (Mix)", Tier.EXACT),
+        ("Glue (Edit)", "Glue (Remix)", Tier.OTHER_MIX),
+        ("Glue (Remix)", "Glue - Edit", Tier.OTHER_MIX),
+        ("Glue (Version)", "Glue (Edit)", Tier.OTHER_MIX),
+        ("Glue (Remix)", "Glue (Remix Edit)", Tier.OTHER_MIX),
+        ("Glue (Hardfloor Remix)", "Glue (Remix)", Tier.OTHER_MIX),
+    ],
+)
+def test_unnamed_versions_agree_only_when_they_are_the_same_kind(title, candidate, tier):
+    """A bare edit is not the exact version of a bare remix, though neither names anyone."""
+    outcome = evaluate(SourceTrack(("Bicep",), title), spotify(candidate, "Bicep"))
+    assert isinstance(outcome, Match)
+    assert outcome.tier == tier
+
+
+@pytest.mark.parametrize(
+    ("credit", "names"),
+    [
+        ("Feater", ("feater",)),
+        ("Featurecast", ("featurecast",)),
+        ("FTampa", ("ftampa",)),
+        ("Bicep feat. Clara La San", ("bicep feat clara la san", "bicep", "clara la san")),
+        ("Bicep ft Clara La San", ("bicep ft clara la san", "bicep", "clara la san")),
+        ("Bicep Feat Clara La San", ("bicep feat clara la san", "bicep", "clara la san")),
+    ],
+)
+def test_featuring_splits_a_credit_only_as_a_whole_word(credit, names):
+    """A name that starts like feat or ft is one artist, not a credit with a guest."""
+    assert split_artists(credit) == names
 
 
 @pytest.mark.parametrize(
