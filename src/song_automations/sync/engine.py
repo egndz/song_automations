@@ -20,6 +20,7 @@ from song_automations.matching.resolver import (
     SpotifySearcher,
     resolve_release,
 )
+from song_automations.snapshots import name_of
 from song_automations.state.tracker import GATED, Destination, StateTracker
 
 MISSING_RETRY_DAYS = 7
@@ -698,7 +699,7 @@ class SyncEngine:
         current = [str(track.id) for track in playlist_client.get_playlist_tracks(playlist.id)]
         if current and not desired:
             self._console.print(
-                f"  [yellow]Nothing matched for '{playlist.name}'; leaving the playlist alone.[/yellow]"
+                f"  [yellow]Nothing matched for '{name_of(playlist)}'; leaving the playlist alone.[/yellow]"
             )
             return
         wanted = set(desired)
