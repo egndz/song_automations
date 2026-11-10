@@ -15,6 +15,7 @@ from song_automations.errors import (
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
+    WritesRefusedError,
 )
 from song_automations.state.tracker import StateTracker
 from song_automations.want.sync import WantResult
@@ -28,6 +29,7 @@ STOPPING_ERRORS = [
     (LoginFailedError("Spotify", "invalid_client"), 2, "did not go through (invalid_client)"),
     (SearchBudgetExhaustedError("Spotify", 400), 0, "400 Spotify searches allowed per day are used"),
     (RateLimitError(120), 2, "SoundCloud has rate limited this app"),
+    (WritesRefusedError("SoundCloud", "An active Artist Pro subscription is required"), 1, "Artist Pro subscription is required"),
 ]
 
 PASSING_ERRORS = [

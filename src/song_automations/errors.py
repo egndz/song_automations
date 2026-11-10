@@ -94,12 +94,32 @@ class UnattendedLoginError(ReauthRequiredError):
         )
 
 
+class WritesRefusedError(RuntimeError):
+    """A platform refuses to let this account change playlists at all.
+
+    SoundCloud answers this way to accounts without an Artist Pro
+    subscription, so the same request would fail on every run.
+
+    Args:
+        platform: Platform name.
+        reason: What the platform said.
+    """
+
+    def __init__(self, platform: str, reason: str) -> None:
+        self.platform = platform
+        self.reason = reason
+        super().__init__(
+            f"{platform} refused to change a playlist: {reason}. "
+            f"Playlists on {platform} were left as they were."
+        )
+
+
 class SearchBudgetExhaustedError(RuntimeError):
     """The searches allowed in a day are used, so the run stops to stay under the platform quota.
 
     Args:
         platform: Platform name.
-        budget: Searches allowed in any 24 hours.
+        budget: Searches allowed in the counting window, which is just under a day.
         resumes_at: When searches are allowed again, in seconds since the epoch, if known.
     """
 

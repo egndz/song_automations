@@ -23,6 +23,7 @@ from song_automations.errors import (
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
+    WritesRefusedError,
 )
 from song_automations.logging import setup_logging
 from song_automations.matching.isrc import IsrcFinder
@@ -71,6 +72,7 @@ RUN_STOPPING_ERRORS = (
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
+    WritesRefusedError,
     RateLimitError,
     typer.Exit,
     typer.Abort,
@@ -253,6 +255,9 @@ def _friendly_errors(settings: Settings | None = None) -> Iterator[None]:
         console.print(f"[red]{limited}[/red]")
         _alert_owner(settings, limited)
         raise typer.Exit(2) from error
+    except WritesRefusedError as error:
+        console.print(f"[yellow]{escape(str(error))}[/yellow]")
+        raise typer.Exit(1) from error
     except SnapshotError as error:
         console.print(f"[red]{escape(str(error))}[/red]")
         _alert_owner(settings, error)
