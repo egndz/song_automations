@@ -17,6 +17,7 @@ from song_automations.matching.matcher import (
     parse_title,
     soundcloud_candidate,
     soundcloud_readings,
+    split_artists,
     spotify_candidate,
 )
 
@@ -169,6 +170,44 @@ def test_different_length_of_same_named_version_drops_a_tier():
 def test_classify_tier(source, candidate, tier):
     """The version ladder follows the agreed preference."""
     assert classify_tier(source, candidate) == tier
+
+
+@pytest.mark.parametrize(
+    ("title", "candidate", "tier"),
+    [
+        ("Glue (Remix)", "Glue - Remix", Tier.EXACT),
+        ("Glue (Remix)", "Glue (RMX)", Tier.EXACT),
+        ("Glue (Remix)", "Glue (Remix Version)", Tier.EXACT),
+        ("Glue (Edit)", "Glue (Reedit)", Tier.EXACT),
+        ("Glue (Version)", "Glue (Mix)", Tier.EXACT),
+        ("Glue (Edit)", "Glue (Remix)", Tier.OTHER_MIX),
+        ("Glue (Remix)", "Glue - Edit", Tier.OTHER_MIX),
+        ("Glue (Version)", "Glue (Edit)", Tier.OTHER_MIX),
+        ("Glue (Remix)", "Glue (Remix Edit)", Tier.OTHER_MIX),
+        ("Glue (Hardfloor Remix)", "Glue (Remix)", Tier.OTHER_MIX),
+    ],
+)
+def test_unnamed_versions_agree_only_when_they_are_the_same_kind(title, candidate, tier):
+    """A bare edit is not the exact version of a bare remix, though neither names anyone."""
+    outcome = evaluate(SourceTrack(("Bicep",), title), spotify(candidate, "Bicep"))
+    assert isinstance(outcome, Match)
+    assert outcome.tier == tier
+
+
+@pytest.mark.parametrize(
+    ("credit", "names"),
+    [
+        ("Feater", ("feater",)),
+        ("Featurecast", ("featurecast",)),
+        ("FTampa", ("ftampa",)),
+        ("Bicep feat. Clara La San", ("bicep feat clara la san", "bicep", "clara la san")),
+        ("Bicep ft Clara La San", ("bicep ft clara la san", "bicep", "clara la san")),
+        ("Bicep Feat Clara La San", ("bicep feat clara la san", "bicep", "clara la san")),
+    ],
+)
+def test_featuring_splits_a_credit_only_as_a_whole_word(credit, names):
+    """A name that starts like feat or ft is one artist, not a credit with a guest."""
+    assert split_artists(credit) == names
 
 
 @pytest.mark.parametrize(
