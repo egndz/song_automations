@@ -9,6 +9,8 @@ from song_automations.clients.discogs import Track
 from song_automations.clients.spotify import SpotifyClient
 from song_automations.config import Settings
 from song_automations.errors import (
+    LoginFailedError,
+    LoginTimeoutError,
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
@@ -306,14 +308,18 @@ def test_search_budget_holds_across_requests(tmp_path, monkeypatch, budget, stat
 
 
 @pytest.mark.parametrize(
-    ("error", "status", "code", "retry_after"),
+    ("error", "status", "code", "retry_after", "advice"),
     [
-        (RateLimitedError("Spotify", 3600), 429, "rate_limited", "3600"),
-        (ReauthRequiredError("Spotify"), 401, "reauth_required", None),
-        (SearchBudgetExhaustedError("Spotify", 400), 429, "search_budget_exhausted", None),
+        (RateLimitedError("Spotify", 3600), 429, "rate_limited", "3600", "Try again after"),
+        (ReauthRequiredError("Spotify"), 401, "reauth_required", None, "song-automations login spotify"),
+        (LoginTimeoutError("Spotify", 600), 401, "reauth_required", None, "within 600 seconds"),
+        (LoginFailedError("Spotify", "invalid_client"), 401, "reauth_required", None, "invalid_client"),
+        (SearchBudgetExhaustedError("Spotify", 400), 429, "search_budget_exhausted", None, "400"),
     ],
 )
-def test_platform_errors_are_reported_not_swallowed(tmp_path, error, status, code, retry_after):
+def test_platform_errors_are_reported_not_swallowed(
+    tmp_path, error, status, code, retry_after, advice
+):
     """A blocked, logged out or used up platform answers with a clear JSON error."""
     platform = FakePlatform(error=error)
     review = Review(tmp_path, spotify=platform)
@@ -322,6 +328,8 @@ def test_platform_errors_are_reported_not_swallowed(tmp_path, error, status, cod
     assert answer.json()["error"] == code
     assert answer.json()["platform"] == "Spotify"
     assert "Spotify" in answer.json()["detail"]
+    assert advice in answer.json()["detail"]
+    assert "sync again" not in answer.json()["detail"]
     assert answer.headers.get("retry-after") == retry_after
     assert len(platform.queries) == 1
 

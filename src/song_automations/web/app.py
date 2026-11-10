@@ -16,6 +16,8 @@ from song_automations.clients.soundcloud import SoundCloudClient
 from song_automations.clients.spotify import SpotifyClient
 from song_automations.config import Settings, get_settings
 from song_automations.errors import (
+    LoginFailedError,
+    LoginTimeoutError,
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
@@ -301,23 +303,23 @@ def create_app(
 
     @app.exception_handler(ReauthRequiredError)
     async def reauth_required(request: Request, error: ReauthRequiredError) -> JSONResponse:
-        """Reports that a platform login has expired.
+        """Reports that a platform login has expired or could not be renewed.
 
         Args:
             request: Request that needed the login.
-            error: The expired login.
+            error: The expired or failed login.
 
         Returns:
             HTTP 401 saying how to log in again.
         """
-        return platform_error(
-            401,
-            "reauth_required",
-            error.platform,
+        detail = (
             f"Your {error.platform} login has expired. Run "
-            f"'song-automations sync {error.platform.lower()}' in a terminal, approve the "
-            f"{error.platform} page that opens, then try again.",
+            f"'song-automations login {error.platform.lower()}' in a terminal, approve the "
+            f"{error.platform} page that opens, then try again."
         )
+        if isinstance(error, LoginTimeoutError | LoginFailedError):
+            detail = str(error)
+        return platform_error(401, "reauth_required", error.platform, detail)
 
     @app.exception_handler(SearchBudgetExhaustedError)
     async def budget_exhausted(request: Request, error: SearchBudgetExhaustedError) -> JSONResponse:
