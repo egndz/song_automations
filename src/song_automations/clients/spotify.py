@@ -42,6 +42,8 @@ PLAYLIST_CACHE_TTL = 300
 MAX_WAIT_SECONDS = 60
 MAX_ATTEMPTS = 5
 SEARCH_PAUSE_SECONDS = 0.5
+SEARCH_WINDOW_SECONDS = 24 * 3600
+SEARCH_LEDGER_FILE = ".spotify_searches.json"
 SEARCH_LIMIT = 10
 DEFAULT_RETRY_AFTER_SECONDS = 5
 
@@ -56,6 +58,67 @@ def retry_after_seconds(headers: dict | None) -> int:
         Seconds to wait, the default when the header is absent or not a number.
     """
     return parse_retry_after(headers, DEFAULT_RETRY_AFTER_SECONDS)
+
+
+class SearchLedger:
+    """Remembers when searches were made, so the quota holds across runs.
+
+    Spotify counts requests over about a day, not per run, so a dry run
+    followed by a real run must share one allowance.
+
+    Args:
+        path: File that keeps the times, None to keep them in memory only.
+    """
+
+    def __init__(self, path: Path | None = None) -> None:
+        self._path = path
+        self._times = self._load()
+
+    def _load(self) -> list[float]:
+        """Reads the stored times.
+
+        Returns:
+            Times in seconds since the epoch, empty when nothing usable is stored.
+        """
+        if self._path is None or not self._path.exists():
+            return []
+        try:
+            stored = json.loads(self._path.read_text())
+        except (OSError, ValueError):
+            return []
+        if not isinstance(stored, list):
+            return []
+        return [float(moment) for moment in stored if isinstance(moment, int | float)]
+
+    def recent(self, now: float) -> int:
+        """Counts the searches of the last 24 hours and forgets older ones.
+
+        Args:
+            now: Current time in seconds since the epoch.
+
+        Returns:
+            Number of searches inside the window.
+        """
+        self._times = [moment for moment in self._times if now - moment < SEARCH_WINDOW_SECONDS]
+        return len(self._times)
+
+    def record(self, now: float) -> None:
+        """Notes one search and stores the list.
+
+        Args:
+            now: Current time in seconds since the epoch.
+        """
+        self._times.append(now)
+        if self._path is not None:
+            self._path.write_text(json.dumps([round(moment) for moment in self._times]))
+
+    def frees_at(self) -> float | None:
+        """Tells when the oldest search leaves the window.
+
+        Returns:
+            Time in seconds since the epoch, None when nothing is recorded.
+        """
+        return min(self._times) + SEARCH_WINDOW_SECONDS if self._times else None
 
 
 @dataclass
@@ -297,7 +360,7 @@ class SpotifyClient:
         )
         self._last_search = 0.0
         self._search_budget = settings.spotify_search_budget
-        self._searches = 0
+        self._ledger = SearchLedger(settings.data_dir / SEARCH_LEDGER_FILE)
         self._user_id: str | None = None
         self._playlist_cache = CachedPlaylists()
 
@@ -473,14 +536,15 @@ class SpotifyClient:
         return self._call(self._client.album, album_id)
 
     def _pace(self) -> None:
-        """Spaces out searches and stops the run when its search budget is used.
+        """Spaces out searches and stops the run when the searches of the day are used.
 
         Raises:
-            SearchBudgetExhaustedError: When the run has made all the searches it may make.
+            SearchBudgetExhaustedError: When the last 24 hours already hold all the searches allowed.
         """
-        if self._searches >= self._search_budget:
-            raise SearchBudgetExhaustedError(PLATFORM, self._search_budget)
-        self._searches += 1
+        now = time.time()
+        if self._ledger.recent(now) >= self._search_budget:
+            raise SearchBudgetExhaustedError(PLATFORM, self._search_budget, self._ledger.frees_at())
+        self._ledger.record(now)
         pause = SEARCH_PAUSE_SECONDS - (time.monotonic() - self._last_search)
         if pause > 0:
             time.sleep(pause)

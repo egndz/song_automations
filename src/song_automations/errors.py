@@ -95,17 +95,20 @@ class UnattendedLoginError(ReauthRequiredError):
 
 
 class SearchBudgetExhaustedError(RuntimeError):
-    """A run used all the searches it may make, to stay under the platform quota.
+    """The searches allowed in a day are used, so the run stops to stay under the platform quota.
 
     Args:
         platform: Platform name.
-        budget: Searches allowed per run.
+        budget: Searches allowed in any 24 hours.
+        resumes_at: When searches are allowed again, in seconds since the epoch, if known.
     """
 
-    def __init__(self, platform: str, budget: int) -> None:
+    def __init__(self, platform: str, budget: int, resumes_at: float | None = None) -> None:
         self.platform = platform
         self.budget = budget
+        self.resumes_at = resumes_at
+        later = f"a run after {datetime.fromtimestamp(resumes_at):%H:%M on %d %b}" if resumes_at else "the next run"
         super().__init__(
-            f"This run used its {budget} {platform} searches. Finished folders were synced and "
-            "every search so far is saved, so the next run continues where this one stopped."
+            f"The {budget} {platform} searches allowed per day are used. Finished folders were synced "
+            f"and every search so far is saved, so {later} continues where this one stopped."
         )

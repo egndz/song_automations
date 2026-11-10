@@ -98,7 +98,7 @@ song-automations schedule uninstall
 
 Run `schedule install` from the folder that holds your `.env` file, after logging in once with `song-automations login`. On macOS it writes `~/Library/LaunchAgents/com.songautomations.sync.plist` and loads it, and from then on macOS runs `song-automations --unattended sync all` at that time every day, with no terminal open. If the Mac is asleep at that time, the run happens when it wakes up. If it is switched off, that day is skipped. Installing again replaces the earlier schedule, which is how you change the time. Do that too after moving the project folder or rebuilding its Python environment, because the schedule remembers both paths.
 
-One run makes at most 400 Spotify searches, so a large collection fills in over several days. Each run carries on where the last one stopped.
+The tool makes at most 400 Spotify searches in any 24 hours, so a large collection fills in over several days. Each run carries on where the last one stopped.
 
 **Unattended mode.** With `--unattended` in front of a command (or `UNATTENDED=true` in `.env`) the tool never opens a browser and never waits for one. If a login is missing, has expired or is refused, that platform stops at once with a message that names `song-automations login`, the other platform still runs, and the exit code is 2. On macOS a notification titled "Song Automations" tells you the same, so you find out without reading a log. A rate limit is reported the same way, with the time it lasts until. Using up the day's searches is the normal end of a run: exit code 0 and no notification. `song-automations login` always opens the browser, whatever the setting.
 
@@ -246,7 +246,7 @@ A gated track shows a 30 second clip instead of its length. When Discogs lists a
 
 ### Spotify limits
 
-Spotify apps in development mode are blocked for about a day after roughly 900 requests. One run makes at most 400 searches (`SPOTIFY_SEARCH_BUDGET`). When the budget is used up the run stops cleanly, finished folders are synced and every search is saved, so the next run carries on from there. If Spotify blocks the app anyway, the sync says until when and leaves unfinished folders alone.
+Spotify apps in development mode are blocked for about a day after roughly 900 requests. The tool makes at most 400 searches in any 24 hours (`SPOTIFY_SEARCH_BUDGET`), counted across runs, so a dry run and a real run on the same day share the allowance. When the budget is used up the run stops cleanly, finished folders are synced and every search is saved, so the next run carries on from there. If Spotify blocks the app anyway, the sync says until when and leaves unfinished folders alone.
 
 Tracks that are not found are retried after a week. A match you approved or corrected in the review tool is kept for good and never searched again. Saved search responses older than 30 days are deleted at the start of each sync. Run `song-automations report matches` to get a CSV of every match with its tier, so you can check substitutions and missing tracks. `song-automations review` opens a local page that lists the same matches a sync flags, which is every match that is not the exact version and that you have not approved or refused yet, weakest first.
 

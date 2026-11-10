@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -11,7 +12,9 @@ from spotipy.oauth2 import SpotifyOauthError
 
 from song_automations.clients.spotify import (
     DEFAULT_RETRY_AFTER_SECONDS,
+    SEARCH_WINDOW_SECONDS,
     PrivateCacheFileHandler,
+    SearchLedger,
     SpotifyClient,
     SpotifyPlaylist,
     SpotifyTrack,
@@ -297,7 +300,7 @@ class TestSpotifyRateLimitsAndNewApi:
         client = SpotifyClient.__new__(SpotifyClient)
         client._client = MagicMock()
         client._last_search = 0.0
-        client._searches = 0
+        client._ledger = SearchLedger()
         client._search_budget = 1000
         return client
 
@@ -382,7 +385,7 @@ class TestRetryAfterHeader:
         client = SpotifyClient.__new__(SpotifyClient)
         client._client = MagicMock()
         client._last_search = 0.0
-        client._searches = 0
+        client._ledger = SearchLedger()
         client._search_budget = 1000
         client._client.search.side_effect = [
             SpotifyException(429, -1, "limited", headers=headers),
@@ -924,3 +927,54 @@ class TestSpotifyUnattended:
                 auth.get_auth_response()
             assert "redirect address" in str(caught.value)
             assert prompts == []
+
+
+class TestSearchLedger:
+    """The search allowance is counted over 24 hours and across runs."""
+
+    @pytest.mark.parametrize(
+        ("ages", "expected"),
+        [
+            ([10, 3600, SEARCH_WINDOW_SECONDS - 1], 3),
+            ([SEARCH_WINDOW_SECONDS, SEARCH_WINDOW_SECONDS + 5], 0),
+            ([60, SEARCH_WINDOW_SECONDS + 60], 1),
+            ([], 0),
+        ],
+    )
+    def test_only_the_last_day_counts(self, tmp_path, ages, expected):
+        """Searches older than 24 hours leave the count, also when read by a later run."""
+        now = 1_800_000_000.0
+        path = tmp_path / "searches.json"
+        first_run = SearchLedger(path)
+        for age in ages:
+            first_run.record(now - age)
+        assert SearchLedger(path).recent(now) == expected
+
+    @pytest.mark.parametrize("content", ["not json", "{}", "[1, \"two\", null]", ""])
+    def test_damaged_file_does_not_stop_a_run(self, tmp_path, content):
+        """A file that cannot be read counts as few or no searches, never as an error."""
+        path = tmp_path / "searches.json"
+        path.write_text(content)
+        assert SearchLedger(path).recent(1_800_000_000.0) <= 1
+
+    @pytest.mark.parametrize(("used", "allowed"), [(0, 2), (1, 1), (2, 0)])
+    def test_dry_run_and_real_run_share_one_allowance(self, tmp_path, monkeypatch, used, allowed):
+        """Searches an earlier run made today come off what this run may make."""
+        monkeypatch.setattr("song_automations.clients.spotify.time.sleep", lambda _: None)
+        path = tmp_path / "searches.json"
+        earlier = SearchLedger(path)
+        for _ in range(used):
+            earlier.record(time.time() - 60)
+        client = SpotifyClient.__new__(SpotifyClient)
+        client._client = MagicMock()
+        client._client.search.return_value = {"tracks": {"items": []}}
+        client._last_search = 0.0
+        client._search_budget = 2
+        client._ledger = SearchLedger(path)
+        for _ in range(allowed):
+            client.search_raw("q")
+        with pytest.raises(SearchBudgetExhaustedError) as stopped:
+            client.search_raw("q")
+        assert client._client.search.call_count == allowed
+        assert stopped.value.resumes_at > time.time()
+        assert "a run after" in str(stopped.value)
