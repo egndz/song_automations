@@ -18,6 +18,7 @@ from song_automations.matching.matcher import (
 from song_automations.matching.resolver import SearchCache, query_title, unquoted
 
 MAX_VERSIONS = 3
+VERSION_NOT_ON_SPOTIFY = ("", "original")
 MAX_ERRORS_IN_A_ROW = 3
 PLATFORM = "deezer"
 
@@ -62,7 +63,7 @@ class RecordingStore(Protocol):
 
     def get_spotify_outcome(
         self, discogs_release_id: int, track_position: str, track_name: str
-    ) -> bool | None: ...
+    ) -> str | None: ...
 
 
 def with_recording_evidence(
@@ -81,9 +82,9 @@ def with_recording_evidence(
     an exact Spotify match counts too, which covers tracks the catalogue
     lacks, and the length the catalogue lists wins when both know the code.
     Fan uploads are allowed only for tracks no catalogue carries, which keeps
-    covers out. That is known only once Spotify has been asked about the
-    track, and a full Spotify sync takes several runs, so until a Spotify
-    decision is stored for the track fan uploads stay off. A sync and the
+    covers out: Spotify must have been asked and have found nothing, or only
+    the original of a listed mix. A full Spotify sync takes several runs, so
+    until a Spotify decision is stored for the track fan uploads stay off. A sync and the
     review app both prepare their sources here, so the review app offers what
     a sync would accept.
 
@@ -107,8 +108,8 @@ def with_recording_evidence(
             isrcs[code] = carried[1]
         if finder is not None:
             isrcs.update(finder.find(source, artist))
-    absent_from_spotify = store.get_spotify_outcome(release_id, position, source.title) is False
-    return replace(source, isrcs=isrcs, fan_uploads=absent_from_spotify and not isrcs)
+    outcome = store.get_spotify_outcome(release_id, position, source.title)
+    return replace(source, isrcs=isrcs, fan_uploads=outcome in VERSION_NOT_ON_SPOTIFY and not isrcs)
 
 
 class IsrcFinder:

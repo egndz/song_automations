@@ -921,13 +921,13 @@ class TestGateMatcherMigration:
         ("destination", "stored_title", "track_id", "tier", "status", "expected"),
         [
             (None, None, None, None, None, None),
-            ("spotify", "Glue", None, None, None, False),
-            ("spotify", "Glue", "id", "exact", None, True),
-            ("spotify", "Glue", "id", "exact", "approved", True),
-            ("spotify", "Glue", "id", "exact", "rejected", True),
-            ("spotify", "Glue", "id", None, None, True),
-            ("spotify", "Glue", "id", "original", None, False),
-            ("spotify", "Glue", "id", "other_mix", None, False),
+            ("spotify", "Glue", None, None, None, ""),
+            ("spotify", "Glue", "id", "exact", None, "exact"),
+            ("spotify", "Glue", "id", "exact", "approved", "exact"),
+            ("spotify", "Glue", "id", "exact", "rejected", "exact"),
+            ("spotify", "Glue", "id", None, None, "exact"),
+            ("spotify", "Glue", "id", "original", None, "original"),
+            ("spotify", "Glue", "id", "other_mix", None, "other_mix"),
             ("spotify", "Glue (Original Mix)", "id", "exact", None, None),
             ("spotify", "Opal", None, None, None, None),
             ("soundcloud", "Glue", "id", "exact", None, None),
@@ -943,7 +943,7 @@ class TestGateMatcherMigration:
             tracker.save_matched_track(1, "A1", "Bicep", stored_title, destination, track_id, 0.9 if track_id else 0.0, match_tier=tier)
         if status:
             tracker.update_review_status(tracker.get_cached_match(1, "A1", destination).id, status)
-        assert tracker.get_spotify_outcome(1, "A1", "Glue") is expected
+        assert tracker.get_spotify_outcome(1, "A1", "Glue") == expected
         assert tracker.get_spotify_outcome(1, "B1", "Glue") is None
         assert tracker.get_spotify_outcome(2, "A1", "Glue") is None
 

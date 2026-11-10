@@ -555,7 +555,7 @@ def test_approve_all_ignores_an_id_that_is_not_flagged(tmp_path, tier):
     [
         (None, None, None, []),
         (None, None, "Glue", ["7"]),
-        ("sp1", "other_mix", "Glue", ["7"]),
+        ("sp1", "other_mix", "Glue", []),
         ("sp1", "original", "Glue", ["7"]),
         ("sp1", "exact", "Glue", []),
         (None, None, "Opal", []),
