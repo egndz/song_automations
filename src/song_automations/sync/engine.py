@@ -14,7 +14,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from song_automations.clients.discogs import DiscogsClient, Folder, Release, Track
 from song_automations.config import Settings
 from song_automations.matching.isrc import IsrcFinder
-from song_automations.matching.matcher import Match, SourceTrack, Tier
+from song_automations.matching.matcher import PLAYABLE, Match, SourceTrack, Tier
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
     SpotifySearcher,
@@ -492,6 +492,11 @@ class SyncEngine:
     ) -> list[tuple[Track, str | None, float, str | None]]:
         """Matches the tracks of a release, reusing stored decisions.
 
+        A track left without a match is looked up once more with gated uploads
+        allowed, and counts as gated only when that finds an upload the
+        account cannot play in full. Uploads already given to other tracks of
+        the release are left out of that second look.
+
         Args:
             release: Parent release.
             tracks: Tracks of the release.
@@ -523,12 +528,15 @@ class SyncEngine:
             ]
             sources = [self._to_source(track, release, destination) for track in pending]
 
-            def resolve(using, indexes: list[int]) -> list[Match | None]:
+            def resolve(
+                using, indexes: list[int], used: frozenset[str] = frozenset()
+            ) -> list[Match | None]:
                 """Matches some of the pending tracks.
 
                 Args:
                     using: Searcher to use.
                     indexes: Positions in the pending list.
+                    used: Candidate ids that already belong to other tracks.
 
                 Returns:
                     One entry per index.
@@ -540,7 +548,7 @@ class SyncEngine:
                     pending[0].release_artist,
                     release.title,
                     pending[0].labels,
-                    excluded=[excluded[i] for i in indexes],
+                    excluded=[excluded[i] | used for i in indexes],
                     alias_lookup=lambda index: self._aliases(pending[indexes[index]]),
                 )
 
@@ -548,8 +556,13 @@ class SyncEngine:
             unmatched = [i for i, match in enumerate(matches) if match is None]
             gated: set[int] = set()
             if unmatched and hasattr(searcher, "including_gated") and not self._settings.soundcloud_gated_tracks:
-                found = resolve(searcher.including_gated(), unmatched)
-                gated = {i for i, match in zip(unmatched, found, strict=True) if match}
+                used = frozenset(match.candidate.id for match in matches if match)
+                found = resolve(searcher.including_gated(), unmatched, used)
+                gated = {
+                    i
+                    for i, match in zip(unmatched, found, strict=True)
+                    if match and match.candidate.access != PLAYABLE
+                }
             for index, (track, match) in enumerate(zip(pending, matches, strict=True)):
                 tier = match.tier.name.lower() if match else GATED if index in gated else None
                 self._save_decision(release, track, match, destination, tier)

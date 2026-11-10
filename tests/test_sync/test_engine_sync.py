@@ -1,5 +1,6 @@
 """End-to-end engine tests with fake platforms and a real state database."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -467,19 +468,21 @@ class FakeSoundCloud(FakeSpotify):
         self.playlists[playlist_id] = [str(t) for t in track_ids]
 
 
-def run_soundcloud(state, soundcloud, gated: bool):
-    """Runs a SoundCloud sync of one folder holding one track.
+def run_soundcloud(state, soundcloud, gated: bool, tracks=None):
+    """Runs a SoundCloud sync of one folder, holding one track unless others are given.
 
     Args:
         state: Tracker.
         soundcloud: SoundCloud fake.
         gated: Whether gated tracks may match.
+        tracks: Discogs tracks of the folder.
 
     Returns:
         The result.
     """
     settings = Settings(_env_file=None, soundcloud_gated_tracks=gated)
-    engine = SyncEngine(settings, FakeDiscogs({"House": [discogs_track()]}), state, Console(quiet=True))
+    discogs = FakeDiscogs({"House": tracks or [discogs_track()]})
+    engine = SyncEngine(settings, discogs, state, Console(quiet=True))
     return engine.sync_to_soundcloud(soundcloud, include_wantlist=False)
 
 
@@ -510,3 +513,40 @@ def test_allowing_gated_tracks_takes_effect_on_the_next_run(state, allowed_later
     result = run_soundcloud(state, soundcloud, allowed_later)
     assert soundcloud.playlists.get("Discogs - House", []) == playlist
     assert result.tracks_gated == (0 if allowed_later else 1)
+
+
+def bicep_upload(id, title, access, ms=300_000):
+    """Builds a raw SoundCloud track on the Bicep account.
+
+    Args:
+        id: Track id.
+        title: Upload title.
+        access: Access level for the account.
+        ms: Length SoundCloud reports, 30 seconds for a clip that hides it.
+
+    Returns:
+        Raw track.
+    """
+    return {"id": id, "title": title, "user": {"username": "Bicep"}, "duration": ms, "access": access}
+
+
+@pytest.mark.parametrize(
+    ("length", "uploads", "playlist", "missing", "counted"),
+    [
+        ("", [bicep_upload(7, "Opal", "playable")], ["7"], 1, 0),
+        ("", [bicep_upload(7, "Opal", "playable"), bicep_upload(8, "Opal (Four Tet Remix)", "preview")], ["7"], 1, 1),
+        ("", [bicep_upload(7, "Opal", "playable"), bicep_upload(8, "Opal (Four Tet Remix)", "playable")], ["7", "8"], 0, 0),
+        ("5:00", [bicep_upload(7, "Opal", "playable"), bicep_upload(8, "Opal (Four Tet Remix)", "preview", 30_000)], ["7"], 1, 1),
+        ("", [bicep_upload(7, "Opal", "preview")], [], 2, 1),
+    ],
+)
+def test_only_an_upload_the_account_cannot_play_counts_as_gated(state, length, uploads, playlist, missing, counted):
+    """A playable upload that went to the original does not make the missing remix look gated."""
+    tracks = [
+        replace(discogs_track("Opal", "A1"), duration=length),
+        replace(discogs_track("Opal (Four Tet Remix)", "B1"), duration=length),
+    ]
+    soundcloud = FakeSoundCloud(uploads)
+    result = run_soundcloud(state, soundcloud, False, tracks)
+    assert soundcloud.playlists.get("Discogs - House", []) == playlist
+    assert (result.tracks_missing, result.tracks_gated) == (missing, counted)
