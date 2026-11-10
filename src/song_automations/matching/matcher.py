@@ -431,9 +431,11 @@ def _rejected_marker(source: SourceTrack, candidate: Candidate) -> str | None:
     """Finds a disqualifying word the source itself does not carry.
 
     Artist and title words are ignored, so the act Chain Reaction is not taken
-    for a reaction video. Words that usually mean a recording of a set or a gig
-    are forgiven when the length is within seconds of the source, because then
-    the upload is the record itself on a channel with that word in its title.
+    for a reaction video. The source title has to carry the marker as whole
+    words, so the title Alive does not excuse a live take. Words that usually
+    mean a recording of a set or a gig are forgiven when the length is within
+    seconds of the source, because then the upload is the record itself on a
+    channel with that word in its title.
 
     Args:
         source: Source track.
@@ -442,12 +444,12 @@ def _rejected_marker(source: SourceTrack, candidate: Candidate) -> str | None:
     Returns:
         The disqualifying word, or None.
     """
-    source_clean = clean(source.title)
+    source_words = f" {clean(source.title)} "
     text = f" {clean(candidate.raw_title)} "
     for credit in source.artists:
         text = text.replace(f" {clean(DISAMBIGUATION.sub('', credit))} ", " ")
     for found in REJECT_MARKERS.finditer(text):
-        if found[0] not in source_clean:
+        if f" {found[0]} " not in source_words:
             return found[0]
     close = (
         source.duration_ms
@@ -456,7 +458,7 @@ def _rejected_marker(source: SourceTrack, candidate: Candidate) -> str | None:
     )
     if not close:
         for found in SOFT_MARKERS.finditer(text):
-            if found[0] not in source_clean:
+            if f" {found[0]} " not in source_words:
                 return found[0]
     return None
 

@@ -114,6 +114,26 @@ def test_marker_is_forgiven_when_source_title_carries_it():
     assert isinstance(outcome, Match)
 
 
+@pytest.mark.parametrize(
+    ("artist", "title", "candidate", "accepted"),
+    [
+        ("Pearl Jam", "Alive", spotify("Alive (Live)", "Pearl Jam"), False),
+        ("Pink Floyd", "Eclipse", soundcloud("Pink Floyd - Eclipse (Clip)", "Pink Floyd"), False),
+        ("The Rolling Stones", "Undercover Of The Night", spotify("Undercover Of The Night (Cover)", "The Rolling Stones"), False),
+        ("Marina", "Obsessions", spotify("Obsessions - BBC Sessions", "Marina"), False),
+        ("Big Daddy Kane", "Special Delivery", spotify("Special Delivery - Live", "Big Daddy Kane"), False),
+        ("Oasis", "Live Forever", spotify("Live Forever - Live at Knebworth", "Oasis"), False),
+        ("The Who", "Substitute (Live At Leeds)", spotify("Substitute - Live At Leeds", "The Who"), True),
+        ("Nirvana", "About A Girl (MTV Unplugged)", spotify("About A Girl - MTV Unplugged", "Nirvana"), True),
+        ("Pearl Jam", "Alive (Live)", spotify("Alive - Live", "Pearl Jam"), True),
+        ("Pearl Jam", "Alive", spotify("Alive", "Pearl Jam"), True),
+    ],
+)
+def test_marker_is_excused_only_by_the_same_whole_words(artist, title, candidate, accepted):
+    """A title that merely contains the letters of a marker does not excuse it."""
+    assert isinstance(evaluate(SourceTrack((artist,), title), candidate), Match) is accepted
+
+
 @pytest.mark.parametrize(("delta", "accepted"), [(1_000, True), (60_000, False)])
 def test_gig_word_is_forgiven_only_at_the_same_length(delta, accepted):
     """A label channel named after a venue is fine if the length is the record's."""
