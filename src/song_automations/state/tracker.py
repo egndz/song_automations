@@ -784,6 +784,12 @@ class StateTracker:
     def has_exact_spotify_match(self, discogs_release_id: int, track_position: str) -> bool:
         """Checks whether Spotify carries the exact version of a track.
 
+        The title is not compared, unlike in get_exact_spotify_recording, and
+        that is on purpose. Both lean to the careful side: a recording code is
+        proof, so it is dropped as soon as the title at the position changed,
+        while this answer only switches fan uploads off, so a title that was
+        merely respelled on Discogs must not switch them back on.
+
         Args:
             discogs_release_id: Discogs release ID.
             track_position: Track position.

@@ -438,6 +438,28 @@ def test_released_tracks_refuse_fan_uploads(state, destination, codes, on_spotif
     assert (set(source.isrcs), source.fan_uploads, len(finder.asked)) == (set(isrcs), fan_uploads, lookups)
 
 
+@pytest.mark.parametrize(
+    ("stored_title", "fan_uploads"),
+    [
+        ("Glue", False),
+        ("Glue (Original Mix)", False),
+        ("Opal", False),
+        (None, True),
+    ],
+)
+def test_respelled_title_keeps_fan_uploads_refused(state, stored_title, fan_uploads):
+    """An exact Spotify match at the position refuses fan uploads even after Discogs changed the title."""
+    if stored_title:
+        state.save_matched_track(
+            1, "A1", "Bicep", stored_title, "spotify", "sp1", 0.9,
+            match_tier="exact", matched_isrc="GBCFB1700231",
+        )
+    engine = SyncEngine(settings_beside(state), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=FakeFinder({}))
+    source = engine._to_source(discogs_track(), Release(1, "Release", "Bicep", 2017, 1, "Folder"), "soundcloud")
+    assert source.fan_uploads is fan_uploads
+    assert set(source.isrcs) == ({"GBCFB1700231"} if stored_title == "Glue" else set())
+
+
 class FakeSoundCloud(FakeSpotify):
     """SoundCloud stand-in holding playlists in memory.
 
