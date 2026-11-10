@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from song_automations import notify, schedule
 from song_automations.config import Settings
 
 
@@ -47,6 +48,29 @@ def isolated_data_dir(
     folder = tmp_path_factory.mktemp("data_dir")
     monkeypatch.setenv("DATA_DIR", str(folder))
     return folder
+
+
+@pytest.fixture(autouse=True)
+def no_real_system_commands(monkeypatch) -> None:
+    """Keeps every test from showing a real desktop notification or touching launchd.
+
+    Args:
+        monkeypatch: Pytest monkeypatch.
+    """
+
+    def refuse(command: list[str]) -> None:
+        """Fails instead of running a command on the real machine.
+
+        Args:
+            command: The command a test tried to run.
+
+        Raises:
+            AssertionError: Always.
+        """
+        raise AssertionError(f"a test tried to run a real command: {command}")
+
+    monkeypatch.setattr(notify, "_run_command", refuse)
+    monkeypatch.setattr(schedule, "_run_command", refuse)
 
 
 @pytest.fixture

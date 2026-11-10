@@ -27,6 +27,7 @@ class Settings(BaseSettings):
         spotify_search_budget: Spotify searches one run may make.
         login_wait_seconds: Seconds to wait for a login page to be approved in the browser.
         snapshot_runs_kept: Newest runs whose playlist snapshots are kept.
+        unattended: Whether nobody is there to approve a login page, so none may be opened.
         high_confidence: Threshold for high confidence matches (auto-add).
         log_level: Logging level for file output.
     """
@@ -102,6 +103,10 @@ class Settings(BaseSettings):
         default=30,
         ge=1,
         description="Newest runs whose playlist snapshots are kept; older ones are deleted when a sync starts",
+    )
+    unattended: bool = Field(
+        default=False,
+        description="Never open a browser or wait for one; stop with a message when a login is needed",
     )
     high_confidence: float = Field(
         default=0.50,

@@ -15,7 +15,12 @@ from song_automations.clients.soundcloud import (
     SoundCloudTrack,
 )
 from song_automations.config import Settings
-from song_automations.errors import LoginFailedError, LoginTimeoutError, ReauthRequiredError
+from song_automations.errors import (
+    LoginFailedError,
+    LoginTimeoutError,
+    ReauthRequiredError,
+    UnattendedLoginError,
+)
 
 
 class TestPKCEGeneration:
@@ -339,7 +344,7 @@ class TestSoundCloudLogin:
     """Waiting for the SoundCloud approval page, for a configurable time."""
 
     @staticmethod
-    def _client(tmp_path, monkeypatch, codes, wait=600, token=None, saved=None):
+    def _client(tmp_path, monkeypatch, codes, wait=600, token=None, saved=None, unattended=False):
         """Builds a client whose browser, clock, local server and token endpoint are fakes.
 
         Args:
@@ -349,6 +354,7 @@ class TestSoundCloudLogin:
             wait: Seconds to wait for the approval.
             token: Answer of the token endpoint.
             saved: Access token of a saved login, if any.
+            unattended: Whether the run may not open a browser.
 
         Returns:
             The client, with the fake server in client.server and opened pages in client.opened.
@@ -362,6 +368,7 @@ class TestSoundCloudLogin:
             soundcloud_client_secret="secret",
             data_dir=tmp_path,
             login_wait_seconds=wait,
+            unattended=unattended,
         )
         clock = [0.0]
         client = SoundCloudClient(settings)
@@ -482,3 +489,48 @@ class TestSoundCloudLogin:
             client.login()
         assert reason in str(caught.value)
         assert client.opened == []
+
+    @pytest.mark.parametrize(
+        ("saved", "entry"),
+        [
+            (None, "authenticate"),
+            (None, "_get_headers"),
+            ("a-old", "refused"),
+        ],
+    )
+    def test_unattended_run_stops_instead_of_opening_the_page(self, tmp_path, monkeypatch, saved, entry):
+        """A missing login, or one SoundCloud no longer accepts, stops an unattended run at once."""
+        client = self._client(
+            tmp_path,
+            monkeypatch,
+            ["c"],
+            token=FakeTokenResponse(401, {}),
+            saved=saved,
+            unattended=True,
+        )
+        with pytest.raises(UnattendedLoginError) as caught:
+            if entry == "refused":
+                client._handle_auth_error(FakeTokenResponse(401, {}))
+            else:
+                getattr(client, entry)()
+        assert isinstance(caught.value, ReauthRequiredError)
+        assert "song-automations login soundcloud" in str(caught.value)
+        assert client.opened == []
+        assert client.bound == []
+
+    @pytest.mark.parametrize(
+        ("saved", "method", "pages_opened"),
+        [
+            ("a-old", "login", 1),
+            (None, "login", 1),
+            ("a-old", "authenticate", 0),
+        ],
+    )
+    def test_unattended_setting_spares_the_login_command_and_a_saved_login(
+        self, tmp_path, monkeypatch, saved, method, pages_opened
+    ):
+        """Logging in by name still opens the page, and a saved login is used without asking."""
+        client = self._client(tmp_path, monkeypatch, ["c"], saved=saved, unattended=True)
+        getattr(client, method)()
+        assert len(client.opened) == pages_opened
+        assert client._access_token == ("a-new" if pages_opened else "a-old")

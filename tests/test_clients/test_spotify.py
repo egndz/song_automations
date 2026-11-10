@@ -21,6 +21,7 @@ from song_automations.errors import (
     RateLimitedError,
     ReauthRequiredError,
     SearchBudgetExhaustedError,
+    UnattendedLoginError,
 )
 
 
@@ -604,3 +605,198 @@ class TestTimedSpotifyOAuth:
             auth._get_auth_response_local_server(8888)
         assert caught.value.error == reason
         assert server.closed
+
+
+class FakeTerminal:
+    """Standard input that only says whether a person can type into it.
+
+    Args:
+        interactive: Whether it is a terminal.
+    """
+
+    def __init__(self, interactive):
+        self._interactive = interactive
+
+    def isatty(self):
+        """Tells whether a person can type here.
+
+        Returns:
+            True for a terminal.
+        """
+        return self._interactive
+
+
+class TestSpotifyUnattended:
+    """An unattended run never opens a browser, waits for one or asks for typed input."""
+
+    @staticmethod
+    def _forbid_asking(monkeypatch):
+        """Makes every way of asking a person, and the network, fail the test.
+
+        Args:
+            monkeypatch: Pytest monkeypatch.
+
+        Returns:
+            A list that receives the name of anything that was tried anyway.
+        """
+        tried = []
+
+        def forbid(name):
+            """Builds a stand-in that records the attempt and fails.
+
+            Args:
+                name: What was tried.
+
+            Returns:
+                The stand-in.
+            """
+
+            def refuse(*args, **kwargs):
+                """Records the attempt and fails.
+
+                Args:
+                    *args: Ignored.
+                    **kwargs: Ignored.
+
+                Raises:
+                    AssertionError: Always.
+                """
+                tried.append(name)
+                raise AssertionError(f"an unattended run tried: {name}")
+
+            return refuse
+
+        monkeypatch.setattr("spotipy.oauth2.webbrowser.open", forbid("browser"))
+        monkeypatch.setattr("song_automations.clients.spotify.start_local_http_server", forbid("server"))
+        monkeypatch.setattr("spotipy.oauth2.start_local_http_server", forbid("server"))
+        monkeypatch.setattr("builtins.input", forbid("input"))
+        monkeypatch.setattr("requests.sessions.Session.request", forbid("network"))
+        return tried
+
+    @pytest.mark.parametrize(
+        "redirect_uri",
+        [
+            "http://127.0.0.1:8888/callback",
+            "http://localhost:8888/callback",
+            "http://127.0.0.1/callback",
+            "https://example.com/callback",
+        ],
+    )
+    def test_missing_login_stops_at_once(self, tmp_path, monkeypatch, redirect_uri):
+        """Without a saved login the first call stops with the command to run, whatever the redirect."""
+        tried = self._forbid_asking(monkeypatch)
+        settings = Settings(
+            spotify_client_id="id",
+            spotify_client_secret="secret",
+            spotify_redirect_uri=redirect_uri,
+            data_dir=tmp_path,
+            unattended=True,
+        )
+        client = SpotifyClient(settings)
+        with pytest.raises(UnattendedLoginError) as caught:
+            client.search_raw("q")
+        assert isinstance(caught.value, ReauthRequiredError)
+        assert "song-automations login spotify" in str(caught.value)
+        assert tried == []
+        assert not client._cache_path.exists()
+
+    @pytest.mark.parametrize("code", ["invalid_client", "invalid_grant"])
+    def test_refused_saved_login_stops_and_stays_in_place(self, tmp_path, monkeypatch, code):
+        """A saved login Spotify refuses is not replaced when nobody can approve a new one."""
+        settings = Settings(
+            spotify_client_id="id", spotify_client_secret="secret", data_dir=tmp_path, unattended=True
+        )
+        client = SpotifyClient(settings)
+        client._client = MagicMock()
+        client._auth = MagicMock()
+        client._cache_path.write_text("old login")
+        client._client.search.side_effect = SpotifyOauthError(f"error: {code}", error=code)
+        with pytest.raises(UnattendedLoginError):
+            client.search_raw("q")
+        assert client._cache_path.read_text() == "old login"
+        assert not (tmp_path / ".spotify_cache.stale").exists()
+        assert client._auth.get_access_token.call_count == 0
+        assert client._client.search.call_count == 1
+
+    @pytest.mark.parametrize(("unattended", "asks"), [(True, False), (False, True)])
+    def test_only_an_attended_login_asks_the_browser(self, tmp_path, monkeypatch, unattended, asks):
+        """The approval is asked for when someone is there, and refused when nobody is."""
+        auth = TimedSpotifyOAuth(
+            wait_seconds=10,
+            unattended=unattended,
+            client_id="id",
+            client_secret="secret",
+            redirect_uri="http://127.0.0.1:8888/callback",
+            cache_path=str(tmp_path / "cache"),
+        )
+        monkeypatch.setattr(auth, "_get_auth_response_local_server", lambda port: "code-1")
+        if asks:
+            assert auth.get_auth_response() == "code-1"
+        else:
+            with pytest.raises(UnattendedLoginError):
+                auth.get_auth_response()
+
+    @pytest.mark.parametrize("unattended", [True, False])
+    def test_login_by_name_opens_the_page_whatever_the_setting(self, tmp_path, unattended):
+        """The login command asks the browser even in unattended mode, then the mode is back."""
+        settings = Settings(
+            spotify_client_id="id",
+            spotify_client_secret="secret",
+            data_dir=tmp_path,
+            unattended=unattended,
+        )
+        client = SpotifyClient(settings)
+        seen = []
+
+        def approve(**kwargs):
+            """Stands in for the browser login and notes whether asking was allowed.
+
+            Args:
+                **kwargs: Options spotipy would get.
+
+            Returns:
+                A token.
+            """
+            seen.append(client._auth.unattended)
+            return "token"
+
+        client._auth.get_access_token = approve
+        client.login()
+        assert seen == [False]
+        assert client._auth.unattended is unattended
+
+    @pytest.mark.parametrize(("interactive", "expected"), [(False, LoginFailedError), (True, None)])
+    def test_pasting_the_redirect_needs_a_terminal(self, tmp_path, monkeypatch, interactive, expected):
+        """Without a terminal the paste prompt is refused instead of waiting for ever."""
+        auth = TimedSpotifyOAuth(
+            wait_seconds=10,
+            client_id="id",
+            client_secret="secret",
+            redirect_uri="https://example.com/callback",
+            cache_path=str(tmp_path / "cache"),
+        )
+        prompts = []
+
+        def typed(prompt):
+            """Stands in for a person pasting the redirect address.
+
+            Args:
+                prompt: Text of the prompt.
+
+            Returns:
+                The pasted address.
+            """
+            prompts.append(prompt)
+            return "https://example.com/callback?code=code-1"
+
+        monkeypatch.setattr(auth, "_open_auth_url", lambda: None)
+        monkeypatch.setattr("builtins.input", typed)
+        monkeypatch.setattr("song_automations.clients.spotify.sys.stdin", FakeTerminal(interactive))
+        if expected is None:
+            assert auth.get_auth_response() == "code-1"
+            assert len(prompts) == 1
+        else:
+            with pytest.raises(expected) as caught:
+                auth.get_auth_response()
+            assert "redirect address" in str(caught.value)
+            assert prompts == []
