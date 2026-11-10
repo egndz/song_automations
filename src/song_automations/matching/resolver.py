@@ -228,6 +228,25 @@ class SoundCloudSearcher:
             return candidates
         return [candidate for candidate in candidates if candidate.access == PLAYABLE]
 
+    @staticmethod
+    def _candidates(items: list | dict) -> list[Candidate]:
+        """Builds candidates from raw tracks that name their title and their account.
+
+        A track without an account name would skip the check on uploads by
+        strangers, so it is not offered.
+
+        Args:
+            items: Raw tracks.
+
+        Returns:
+            Candidates.
+        """
+        return [
+            soundcloud_candidate(item)
+            for item in items
+            if item.get("title") and (item.get("user") or {}).get("username")
+        ]
+
     def _cached(self, key: str, fetch: Callable[[], list | dict]) -> list | dict:
         """Returns a cached response or fetches and stores it.
 
@@ -258,7 +277,7 @@ class SoundCloudSearcher:
         key = clean(name)
         if key not in self._accounts:
             items = self._cached(f"account:{key}", lambda: self._client.account_tracks_raw(name))
-            self._accounts[key] = [soundcloud_candidate(item) for item in items]
+            self._accounts[key] = self._candidates(items)
         return self._usable(self._accounts[key])
 
     def release_candidates(
@@ -280,9 +299,7 @@ class SoundCloudSearcher:
         for query in dict.fromkeys(queries):
             sets = self._cached(f"sets:{query}", lambda q=query: self._client.search_playlists_raw(q))
             for playlist in sets:
-                candidates += [
-                    soundcloud_candidate(item) for item in playlist.get("tracks") or [] if item.get("title")
-                ]
+                candidates += self._candidates(playlist.get("tracks") or [])
         candidates = self._usable(candidates)
         for name in ([artist] if artist else []) + list(labels[:1]):
             candidates += self._account(name)
@@ -315,7 +332,7 @@ class SoundCloudSearcher:
             Candidates.
         """
         items = self._cached(f"track:{query}", lambda: self._client.search_raw(query))
-        return self._usable([soundcloud_candidate(item) for item in items])
+        return self._usable(self._candidates(items))
 
 
 def _is_settled(decision: Decision) -> bool:

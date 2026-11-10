@@ -404,3 +404,40 @@ def test_alias_search_needs_a_title(title, searches):
         alias_lookup=lambda index: ("Feel My Bicep",),
     )
     assert client.searches == searches
+
+
+def soundcloud_holding(route, raw):
+    """Builds a SoundCloud stand-in that offers one upload through one route.
+
+    Args:
+        route: search, sets or account.
+        raw: Raw track.
+
+    Returns:
+        The stand-in.
+    """
+    if route == "search":
+        return StockedSoundCloud([raw])
+    if route == "sets":
+        return FakeSoundCloud(sets=[{"tracks": [raw]}])
+    return FakeSoundCloud(account=[raw])
+
+
+@pytest.mark.parametrize("route", ["search", "sets", "account"])
+@pytest.mark.parametrize(
+    ("user", "expected"),
+    [
+        ({"username": "Bicep"}, "1"),
+        ({"username": "vinyl ripper"}, None),
+        ({"username": ""}, None),
+        ({}, None),
+        (None, None),
+    ],
+)
+def test_upload_without_an_account_name_is_not_offered(route, user, expected):
+    """A released track takes uploads by its artist only, and a nameless account is not mistaken for one."""
+    raw = {"id": 1, "title": "Bicep - Glue", "user": user, "duration": 300_000}
+    searcher = SoundCloudSearcher(soundcloud_holding(route, raw), MemoryCache())
+    source = SourceTrack(("Bicep",), "Glue", duration_ms=300_000, fan_uploads=False)
+    [match] = resolve_release(searcher, [source], ["Bicep"], "Bicep", "Isles")
+    assert (match.candidate.id if match else None) == expected
