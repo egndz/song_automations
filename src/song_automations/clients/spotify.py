@@ -44,7 +44,7 @@ PLAYLIST_CACHE_TTL = 300
 MAX_WAIT_SECONDS = 60
 MAX_ATTEMPTS = 5
 SEARCH_PAUSE_SECONDS = 0.5
-SEARCH_WINDOW_SECONDS = 24 * 3600
+SEARCH_WINDOW_SECONDS = 23 * 3600
 SEARCH_LEDGER_FILE = ".spotify_searches.json"
 SEARCH_LIMIT = 10
 DEFAULT_RETRY_AFTER_SECONDS = 5
@@ -66,7 +66,8 @@ class SearchLedger:
     """Remembers when searches were made, so the quota holds across runs.
 
     Spotify counts requests over about a day, not per run, so a dry run
-    followed by a real run must share one allowance.
+    followed by a real run must share one allowance. The window is 23 hours,
+    so a run at the same time every day always starts with a full allowance.
 
     Args:
         path: File that keeps the times, None to keep them in memory only.
@@ -97,7 +98,7 @@ class SearchLedger:
         ]
 
     def recent(self, now: float) -> int:
-        """Counts the searches of the last 24 hours and forgets older ones.
+        """Counts the searches inside the window and forgets older ones.
 
         The file is read again each time, so a review page and a scheduled
         sync running together share one count.
@@ -559,7 +560,7 @@ class SpotifyClient:
         """Spaces out searches and stops the run when the searches of the day are used.
 
         Raises:
-            SearchBudgetExhaustedError: When the last 24 hours already hold all the searches allowed.
+            SearchBudgetExhaustedError: When the window already holds all the searches allowed.
         """
         now = time.time()
         if self._ledger.recent(now) >= self._search_budget:

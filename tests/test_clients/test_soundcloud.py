@@ -21,6 +21,7 @@ from song_automations.errors import (
     LoginTimeoutError,
     ReauthRequiredError,
     UnattendedLoginError,
+    WritesRefusedError,
 )
 
 
@@ -597,3 +598,59 @@ class TestSoundCloudLogin:
         getattr(client, method)()
         assert len(client.opened) == pages_opened
         assert client._access_token == ("a-new" if pages_opened else "a-old")
+
+
+class TestWritesRefused:
+    """SoundCloud refuses playlist changes from accounts without Artist Pro."""
+
+    @staticmethod
+    def _client(settings, monkeypatch, status, body):
+        """Builds a client whose requests all get one prepared answer.
+
+        Args:
+            settings: Test settings.
+            monkeypatch: Pytest patcher.
+            status: HTTP status to answer with.
+            body: JSON body to answer with, or text when not a dict.
+
+        Returns:
+            The client.
+        """
+        client = SoundCloudClient(settings)
+        answer = httpx.Response(
+            status,
+            request=httpx.Request("POST", "https://api.soundcloud.com/playlists"),
+            **({"json": body} if isinstance(body, dict) else {"text": body}),
+        )
+        monkeypatch.setattr(client, "_request", lambda *args, **kwargs: answer)
+        return client
+
+    @pytest.mark.parametrize(
+        ("change", "body", "reason"),
+        [
+            ("create", {"message": "An active Artist Pro subscription is required for this action"}, "Artist Pro subscription is required"),
+            ("replace", {"message": "An active Artist Pro subscription is required for this action"}, "Artist Pro subscription is required"),
+            ("delete", {"message": "An active Artist Pro subscription is required for this action"}, "Artist Pro subscription is required"),
+            ("create", {}, "403 Forbidden"),
+            ("replace", "<html>Forbidden</html>", "403 Forbidden"),
+        ],
+    )
+    def test_forbidden_change_explains_itself(self, settings, monkeypatch, change, body, reason):
+        """A 403 on a playlist change becomes one clear error carrying what SoundCloud said."""
+        client = self._client(settings, monkeypatch, 403, body)
+        calls = {
+            "create": lambda: client.create_playlist("Discogs - house"),
+            "replace": lambda: client.set_playlist_tracks(1, [2, 3]),
+            "delete": lambda: client.delete_playlist(1),
+        }
+        with pytest.raises(WritesRefusedError) as refused:
+            calls[change]()
+        assert reason in str(refused.value)
+        assert "left as they were" in str(refused.value)
+
+    @pytest.mark.parametrize("status", [500, 404])
+    def test_other_failures_are_not_called_a_refusal(self, settings, monkeypatch, status):
+        """Only a 403 means the account may not change playlists."""
+        client = self._client(settings, monkeypatch, status, {"message": "nope"})
+        with pytest.raises(httpx.HTTPStatusError):
+            client.delete_playlist(1)

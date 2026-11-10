@@ -24,7 +24,7 @@ class Settings(BaseSettings):
         want_playlist_name: Playlist whose tracks go on the Discogs wantlist.
         playlist_prefix: Prefix for created playlists.
         soundcloud_gated_tracks: Whether SoundCloud tracks the account cannot play in full may match.
-        spotify_search_budget: Spotify searches allowed in any 24 hours.
+        spotify_search_budget: Spotify searches allowed in any 23 hours.
         login_wait_seconds: Seconds to wait for a login page to be approved in the browser.
         snapshot_runs_kept: Newest runs whose playlist snapshots are kept.
         unattended: Whether nobody is there to approve a login page, so none may be opened.
@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     spotify_search_budget: int = Field(
         default=400,
         ge=1,
-        description="Spotify searches allowed in any 24 hours, across runs; development mode apps are blocked for a day after about 900",
+        description="Spotify searches allowed in any 23 hours, across runs; development mode apps are blocked for a day after about 900",
     )
     login_wait_seconds: int = Field(
         default=600,

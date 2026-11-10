@@ -15,7 +15,12 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from song_automations.clients.http import DEFAULT_TIMEOUT, RETRYABLE_EXCEPTIONS, handle_rate_limit
 from song_automations.config import Settings
-from song_automations.errors import LoginFailedError, LoginTimeoutError, UnattendedLoginError
+from song_automations.errors import (
+    LoginFailedError,
+    LoginTimeoutError,
+    UnattendedLoginError,
+    WritesRefusedError,
+)
 from song_automations.matching.matcher import clean
 
 EVERY_ACCESS = "playable,preview,blocked"
@@ -593,6 +598,28 @@ class SoundCloudClient:
                 return playlist
         return None
 
+    @staticmethod
+    def _stop_if_writes_refused(response: httpx.Response) -> None:
+        """Turns a refusal to change playlists into an error that explains itself.
+
+        SoundCloud answers 403 to every playlist change from an account
+        without an Artist Pro subscription, while searching still works.
+
+        Args:
+            response: Answer to a request that changes a playlist.
+
+        Raises:
+            WritesRefusedError: When the platform forbids the change.
+        """
+        if response.status_code != 403:
+            return
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        reason = body.get("message") if isinstance(body, dict) else None
+        raise WritesRefusedError(PLATFORM, str(reason or "403 Forbidden"))
+
     def create_playlist(
         self,
         name: str,
@@ -622,6 +649,7 @@ class SoundCloudClient:
         if self._handle_auth_error(response):
             response = self._request("POST", f"{self.API_BASE}/playlists", json=data)
         handle_rate_limit(response)
+        self._stop_if_writes_refused(response)
         response.raise_for_status()
         result = response.json()
 
@@ -644,6 +672,7 @@ class SoundCloudClient:
         if self._handle_auth_error(response):
             response = self._request("DELETE", f"{self.API_BASE}/playlists/{playlist_id}")
         handle_rate_limit(response)
+        self._stop_if_writes_refused(response)
         response.raise_for_status()
 
     def get_playlist_tracks(self, playlist_id: int) -> list[SoundCloudTrack]:
@@ -693,6 +722,7 @@ class SoundCloudClient:
         if self._handle_auth_error(response):
             response = self._request("PUT", f"{self.API_BASE}/playlists/{playlist_id}", json=data)
         handle_rate_limit(response)
+        self._stop_if_writes_refused(response)
         if response.status_code == 422:
             valid_ids = self._add_tracks_individually(playlist_id, track_ids)
             if valid_ids:
