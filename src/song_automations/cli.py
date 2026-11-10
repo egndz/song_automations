@@ -1,5 +1,8 @@
 """Command-line interface for song-automations."""
 
+import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
 
@@ -40,6 +43,17 @@ app.add_typer(report_app, name="report")
 app.add_typer(want_app, name="want")
 
 console = Console()
+logger = logging.getLogger(__name__)
+
+PLATFORM_LABELS = {"spotify": "Spotify", "soundcloud": "SoundCloud"}
+RUN_STOPPING_ERRORS = (
+    RateLimitedError,
+    ReauthRequiredError,
+    SearchBudgetExhaustedError,
+    RateLimitError,
+    typer.Exit,
+    typer.Abort,
+)
 
 
 def _init_settings(min_confidence: float | None = None) -> Settings:
@@ -83,6 +97,7 @@ def _run_sync(
     """
     discogs_client = DiscogsClient(settings)
     state_tracker = StateTracker(settings.db_path)
+    state_tracker.purge_search_cache()
 
     if force_rematch_all:
         count = state_tracker.clear_matched_tracks(platform, preserve_reviewed=False)
@@ -96,7 +111,7 @@ def _run_sync(
 
     if platform == "spotify":
         client = SpotifyClient(settings)
-        _run_want(settings, client, platform, discogs_client, state_tracker, dry_run)
+        _run_want_step(settings, client, platform, discogs_client, state_tracker, dry_run)
         return engine.sync_to_spotify(
             playlist_client=client,
             include_wantlist=not exclude_wantlist,
@@ -105,7 +120,7 @@ def _run_sync(
         )
     else:
         client = SoundCloudClient(settings)
-        _run_want(settings, client, platform, discogs_client, state_tracker, dry_run)
+        _run_want_step(settings, client, platform, discogs_client, state_tracker, dry_run)
         return engine.sync_to_soundcloud(
             playlist_client=client,
             include_wantlist=not exclude_wantlist,
@@ -136,6 +151,100 @@ def _run_want(settings, client, platform, discogs_client, state_tracker, dry_run
         console.print(f"[yellow]No vinyl found on Discogs:[/yellow] {label}")
 
 
+def _run_want_step(settings, client, platform, discogs_client, state_tracker, dry_run) -> None:
+    """Processes the Want playlist before a folder sync without letting it stop the sync.
+
+    An expired login, a rate limit and a used-up search budget would stop the
+    folder sync too, so they are passed on. Anything else, such as Discogs
+    answering with a server error, only costs this run its Want step.
+
+    Args:
+        settings: Application settings.
+        client: Platform client.
+        platform: Platform name.
+        discogs_client: Discogs client.
+        state_tracker: State tracker.
+        dry_run: If True, change nothing.
+
+    Raises:
+        RateLimitedError: When the platform refuses requests for a long time.
+        ReauthRequiredError: When the platform login needs the browser again.
+        SearchBudgetExhaustedError: When the run used all its searches.
+        RateLimitError: When SoundCloud refuses requests.
+    """
+    try:
+        _run_want(settings, client, platform, discogs_client, state_tracker, dry_run)
+    except RUN_STOPPING_ERRORS:
+        raise
+    except Exception as error:
+        logger.info("Want step failed for %s", platform, exc_info=True)
+        detail = str(error) or type(error).__name__
+        console.print(
+            f"[yellow]Skipped the Want playlist this run ({detail}). "
+            "The folder sync continues and the Want playlist is tried again next time.[/yellow]"
+        )
+
+
+@contextmanager
+def _friendly_errors() -> Iterator[None]:
+    """Turns limits and expired logins into a plain message and an exit code.
+
+    A used-up search budget is a normal stop and exits with 0. A rate limit or
+    a login that needs the browser exits with 2.
+
+    Yields:
+        Nothing, the guarded work runs inside the with block.
+
+    Raises:
+        typer.Exit: When the platform refuses the run.
+    """
+    try:
+        yield
+    except SearchBudgetExhaustedError as error:
+        console.print(f"[yellow]{error}[/yellow]")
+        raise typer.Exit(0) from error
+    except (RateLimitedError, ReauthRequiredError) as error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(2) from error
+    except RateLimitError as error:
+        limited = RateLimitedError("SoundCloud", error.retry_after)
+        console.print(f"[red]{limited}[/red]")
+        raise typer.Exit(2) from error
+
+
+def _targets(platform: str) -> list[str]:
+    """Lists the platforms a command was asked to work on.
+
+    Args:
+        platform: spotify, soundcloud or all.
+
+    Returns:
+        Platform names, Spotify first.
+
+    Raises:
+        typer.Exit: When the platform is not one of the three choices.
+    """
+    if platform == "all":
+        return list(PLATFORM_LABELS)
+    if platform in PLATFORM_LABELS:
+        return [platform]
+    console.print(f"[red]Error:[/red] Unknown platform '{platform}'. Use spotify, soundcloud or all.")
+    raise typer.Exit(1)
+
+
+def _make_client(settings: Settings, platform: str) -> SpotifyClient | SoundCloudClient:
+    """Builds the client of a platform.
+
+    Args:
+        settings: Application settings.
+        platform: spotify or soundcloud.
+
+    Returns:
+        The platform client.
+    """
+    return SpotifyClient(settings) if platform == "spotify" else SoundCloudClient(settings)
+
+
 @want_app.command("sync")
 def want_sync(
     platform: Annotated[
@@ -148,17 +257,57 @@ def want_sync(
     ] = False,
 ) -> None:
     """Put the vinyl of new tracks in the Want playlist on the Discogs wantlist."""
+    targets = _targets(platform)
     settings = _init_settings()
     discogs_client = DiscogsClient(settings)
     state_tracker = StateTracker(settings.db_path)
-    try:
-        if platform in ("spotify", "all"):
-            _run_want(settings, SpotifyClient(settings), "spotify", discogs_client, state_tracker, dry_run)
-        if platform in ("soundcloud", "all"):
-            _run_want(settings, SoundCloudClient(settings), "soundcloud", discogs_client, state_tracker, dry_run)
-    except (RateLimitedError, ReauthRequiredError) as error:
-        console.print(f"[red]{error}[/red]")
-        raise typer.Exit(2) from error
+    exit_code = 0
+    for target in targets:
+        try:
+            with _friendly_errors():
+                client = _make_client(settings, target)
+                _run_want(settings, client, target, discogs_client, state_tracker, dry_run)
+        except typer.Exit as stop:
+            exit_code = max(exit_code, stop.exit_code)
+    if exit_code:
+        raise typer.Exit(exit_code)
+
+
+@app.command("login")
+def login(
+    platform: Annotated[
+        str,
+        typer.Argument(help="spotify, soundcloud or all."),
+    ] = "all",
+) -> None:
+    """Open each platform's approval page in the browser and wait for the approval."""
+    targets = _targets(platform)
+    settings = _init_settings()
+    minutes = max(1, round(settings.login_wait_seconds / 60))
+    exit_code = 0
+    for target in targets:
+        label = PLATFORM_LABELS[target]
+        client_id = getattr(settings, f"{target}_client_id")
+        client_secret = getattr(settings, f"{target}_client_secret")
+        if not client_id or not client_secret:
+            console.print(
+                f"[red]Error:[/red] {target.upper()}_CLIENT_ID and {target.upper()}_CLIENT_SECRET not set."
+            )
+            exit_code = max(exit_code, 1)
+            continue
+        console.print(
+            f"Opening the {label} approval page in your browser. "
+            f"Waiting up to {minutes} minute{'s' if minutes != 1 else ''} for the approval..."
+        )
+        try:
+            with _friendly_errors():
+                _make_client(settings, target).login()
+        except typer.Exit as stop:
+            exit_code = max(exit_code, stop.exit_code)
+            continue
+        console.print(f"[green]{label} login approved and saved.[/green]")
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 def _guarded_sync(*args, **kwargs) -> SyncResult:
@@ -174,18 +323,8 @@ def _guarded_sync(*args, **kwargs) -> SyncResult:
     Raises:
         typer.Exit: When the platform refuses the run.
     """
-    try:
+    with _friendly_errors():
         return _run_sync(*args, **kwargs)
-    except SearchBudgetExhaustedError as error:
-        console.print(f"[yellow]{error}[/yellow]")
-        raise typer.Exit(0) from error
-    except (RateLimitedError, ReauthRequiredError) as error:
-        console.print(f"[red]{error}[/red]")
-        raise typer.Exit(2) from error
-    except RateLimitError as error:
-        limited = RateLimitedError("SoundCloud", error.retry_after)
-        console.print(f"[red]{limited}[/red]")
-        raise typer.Exit(2) from error
 
 
 def version_callback(value: bool) -> None:

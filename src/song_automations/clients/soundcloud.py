@@ -4,10 +4,10 @@ import base64
 import hashlib
 import json
 import secrets
+import time
 import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -15,9 +15,11 @@ from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_ex
 
 from song_automations.clients.http import DEFAULT_TIMEOUT, RETRYABLE_EXCEPTIONS, handle_rate_limit
 from song_automations.config import Settings
+from song_automations.errors import LoginFailedError, LoginTimeoutError
 from song_automations.matching.matcher import clean
 
 EVERY_ACCESS = "playable,preview,blocked"
+PLATFORM = "SoundCloud"
 
 
 @dataclass
@@ -216,8 +218,61 @@ class SoundCloudClient:
         code_challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
         return code_verifier, code_challenge
 
+    def login(self) -> None:
+        """Opens the SoundCloud approval page in the browser and waits for the approval.
+
+        The saved login is not consulted, and it stays in place until the new one is saved.
+
+        Raises:
+            LoginTimeoutError: When the page is not approved in time.
+            LoginFailedError: When SoundCloud refuses the login.
+        """
+        self._access_token = None
+        self._user_id = None
+        self.authenticate()
+
+    def _wait_for_code(self, port: int, auth_url: str) -> str:
+        """Opens the approval page and waits for SoundCloud to send the browser back.
+
+        Args:
+            port: Local port the approval is sent to.
+            auth_url: Approval page address.
+
+        Returns:
+            The authorization code.
+
+        Raises:
+            LoginTimeoutError: When the page is not approved in time.
+            LoginFailedError: When the local port cannot be listened on.
+        """
+        wait = self._settings.login_wait_seconds
+        OAuthCallbackHandler.authorization_code = None
+        try:
+            server = HTTPServer(("localhost", port), OAuthCallbackHandler)
+        except OSError as error:
+            raise LoginFailedError(PLATFORM, f"port {port} cannot be used: {error}") from error
+        deadline = time.monotonic() + wait
+        try:
+            webbrowser.open(auth_url)
+            while OAuthCallbackHandler.authorization_code is None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise LoginTimeoutError(PLATFORM, wait)
+                server.timeout = remaining
+                server.handle_request()
+        finally:
+            server.server_close()
+        code = OAuthCallbackHandler.authorization_code
+        OAuthCallbackHandler.authorization_code = None
+        return code
+
     def authenticate(self) -> None:
-        """Perform OAuth 2.1 authentication flow."""
+        """Perform OAuth 2.1 authentication flow.
+
+        Raises:
+            LoginTimeoutError: When the page is not approved in time.
+            LoginFailedError: When SoundCloud refuses the login.
+        """
         if self._access_token:
             return
 
@@ -235,37 +290,28 @@ class SoundCloudClient:
             "code_challenge_method": "S256",
         }
 
-        auth_url = f"{self.AUTH_URL}?{urlencode(params)}"
-
-        server = HTTPServer(("localhost", port), OAuthCallbackHandler)
-        server_thread = Thread(target=server.handle_request)
-        server_thread.start()
-
-        webbrowser.open(auth_url)
-        server_thread.join(timeout=120)
-
-        if not OAuthCallbackHandler.authorization_code:
-            raise RuntimeError("Failed to receive authorization code")
+        code = self._wait_for_code(port, f"{self.AUTH_URL}?{urlencode(params)}")
 
         token_data = {
             "client_id": self._settings.soundcloud_client_id,
             "client_secret": self._settings.soundcloud_client_secret,
             "grant_type": "authorization_code",
-            "code": OAuthCallbackHandler.authorization_code,
+            "code": code,
             "redirect_uri": self._settings.soundcloud_redirect_uri,
             "code_verifier": code_verifier,
         }
 
-        response = self._http_client.post(self.TOKEN_URL, data=token_data)
-        handle_rate_limit(response)
-        response.raise_for_status()
-        tokens = response.json()
+        try:
+            response = self._http_client.post(self.TOKEN_URL, data=token_data)
+            handle_rate_limit(response)
+            response.raise_for_status()
+            tokens = response.json()
+            self._access_token = tokens["access_token"]
+        except (httpx.HTTPError, ValueError, KeyError) as error:
+            raise LoginFailedError(PLATFORM, str(error)) from error
 
-        self._access_token = tokens["access_token"]
         self._refresh_token = tokens.get("refresh_token")
         self._save_tokens()
-
-        OAuthCallbackHandler.authorization_code = None
 
     def _get_headers(self) -> dict[str, str]:
         """Get authorization headers for API requests."""

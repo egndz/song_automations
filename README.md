@@ -32,6 +32,23 @@ Get your API credentials:
 
 ## Usage
 
+### Log in
+
+```bash
+# Both platforms
+song-automations login
+
+# One platform
+song-automations login spotify
+song-automations login soundcloud
+```
+
+Opens the approval page of each platform in your browser, waits for you to approve it and confirms with a green line. The saved login is replaced, so this is also the fix when a sync says a login has expired. A sync still opens the page by itself when no login is saved.
+
+The tool waits 10 minutes for the approval and then stops with a message instead of hanging. Set `LOGIN_WAIT_SECONDS` to change that. The saved logins live in `~/.song_automations/` and only your user can read them.
+
+If Spotify refuses the saved login in the middle of a sync (for example because it was made for another Spotify app, or the approval was withdrawn), the file is renamed to `.spotify_cache.stale`, the approval page opens and the run carries on once you approve it.
+
 ### Sync to Spotify
 
 ```bash
@@ -68,6 +85,8 @@ Add any track to a playlist called `Want` on Spotify or SoundCloud. On the next 
 song-automations want sync --platform spotify --dry-run
 song-automations want sync --platform all
 ```
+
+During a sync the Want playlist is handled first, and a problem there never costs you the sync. If Discogs is down or answers with an error, the tool prints a yellow warning, skips the Want playlist for that run and syncs the folders as usual. Only an expired login, a rate limit or a used-up search budget stop the run, because the folder sync would hit the same wall. With `--platform all`, a platform that is stopped does not keep the other one from running.
 
 ### View status
 
@@ -139,7 +158,7 @@ A gated track shows a 30 second clip instead of its length. When Discogs lists a
 
 Spotify apps in development mode are blocked for about a day after roughly 900 requests. One run makes at most 400 searches (`SPOTIFY_SEARCH_BUDGET`). When the budget is used up the run stops cleanly, finished folders are synced and every search is saved, so the next run carries on from there. If Spotify blocks the app anyway, the sync says until when and leaves unfinished folders alone.
 
-Tracks that are not found are retried after a week. Run `song-automations report matches` to get a CSV of every match with its tier, so you can check substitutions and missing tracks.
+Tracks that are not found are retried after a week. A match you approved or corrected in the review tool is kept for good and never searched again. Saved search responses older than 30 days are deleted at the start of each sync. Run `song-automations report matches` to get a CSV of every match with its tier, so you can check substitutions and missing tracks.
 
 ## Development
 
