@@ -10,6 +10,7 @@ Sync your Discogs collection folders to Spotify and SoundCloud playlists.
 - **Strict track matching**: Every match has to pass artist, title, version and length checks, so wrong songs stay out
 - **Full sync**: Additions AND removals - keeps playlists in sync with your collection
 - **Missing tracks report**: Generate CSV/JSON reports of tracks that couldn't be found
+- **Undo**: Every playlist is saved before a sync changes or deletes it, and one command puts it back
 
 ## Installation
 
@@ -87,6 +88,30 @@ song-automations want sync --platform all
 ```
 
 During a sync the Want playlist is handled first, and a problem there never costs you the sync. If Discogs is down or answers with an error, the tool prints a yellow warning, skips the Want playlist for that run and syncs the folders as usual. Only an expired login, a rate limit or a used-up search budget stop the run, because the folder sync would hit the same wall. With `--platform all`, a platform that is stopped does not keep the other one from running.
+
+### Undo a sync
+
+Before a sync changes or deletes a playlist, it saves what the playlist held: every track in order, with its title and artist. The snapshots are plain JSON files in `~/.song_automations/snapshots/<run>/<platform>/`, one per playlist, where the run is named after the time it started. A run that changes nothing saves nothing, and neither does a dry run. A sync that saved something ends with a line naming the run and the command that undoes it.
+
+```bash
+# List the saved runs, newest first
+song-automations snapshots
+
+# See what putting a run back would change
+song-automations restore 20261110-143205 --dry-run
+
+# Put every playlist of that run back
+song-automations restore 20261110-143205
+
+# Only one platform or one playlist, without being asked first
+song-automations restore 20261110-143205 --platform spotify --playlist "Discogs - Electronic" --yes
+```
+
+A restore puts the same tracks back in the same order and recreates a playlist that the sync deleted. It shows what will change and asks before it writes; `--yes` skips the question. It first saves what the playlists hold now as a run of its own, so a restore can be undone the same way. The next sync rebuilds the playlists from your Discogs folders again, so fix the cause first, for example a wrong match in the review tool.
+
+If a snapshot cannot be written, for example because the disk is full, the sync stops with an error and leaves that playlist as it was. Saving costs no extra requests, because the sync reads the track list anyway; only deleting a playlist reads it once more first. The newest 30 runs are kept and older ones are deleted when a sync starts. Set `SNAPSHOT_RUNS_KEPT` to keep more or fewer.
+
+A few things a restore cannot bring back. A recreated playlist is a new playlist with the old name, so links to the deleted one stay dead. A playlist the run created was empty before, so restoring that run empties it and leaves it in place. On SoundCloud a track that was taken down since then stays out, and the restore says how many did not come back. On Spotify, podcast episodes and local files in a playlist are neither saved nor touched, and tracks that are put back show the day of the restore as the day they were added.
 
 ### View status
 
