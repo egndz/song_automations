@@ -26,6 +26,7 @@ from song_automations.errors import (
 from song_automations.logging import setup_logging
 from song_automations.matching.isrc import IsrcFinder
 from song_automations.notify import notify_attention
+from song_automations.reports.audit import DISAGREEMENTS_NAME, run_audit
 from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
 from song_automations.schedule import schedule_app
@@ -643,6 +644,23 @@ def report_matches(
         share = 100 * found / total if total else 0
         console.print(f"[bold]{platform}[/bold]: {found}/{total} matched ({share:.1f}%) {dict(counts)}")
     console.print(f"Report written to {path}")
+
+
+@app.command("audit")
+def audit(
+    platform: Annotated[
+        str,
+        typer.Option("--platform", "-p", help="spotify, soundcloud or all."),
+    ] = "all",
+    output: Annotated[
+        Path | None,
+        typer.Option("--output", "-o", help="CSV file for the matches that disagree."),
+    ] = None,
+) -> None:
+    """Check every stored match against its stored evidence, without calling any platform."""
+    targets = _targets(platform)
+    settings = get_settings()
+    run_audit(console, settings.db_path, targets, output or settings.reports_dir / DISAGREEMENTS_NAME)
 
 
 @report_app.command("missing")
