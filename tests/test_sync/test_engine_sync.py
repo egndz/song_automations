@@ -375,7 +375,7 @@ class FakeFinder:
     """
 
     def __init__(self, codes=()) -> None:
-        self.codes = frozenset(codes)
+        self.codes = dict.fromkeys(codes)
         self.asked = []
 
     def find(self, source, artist):
@@ -409,7 +409,7 @@ def test_released_tracks_refuse_fan_uploads(state, destination, codes, on_spotif
     finder = FakeFinder(codes)
     engine = SyncEngine(Settings(_env_file=None), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
     source = engine._to_source(track, Release(1, "Release", "Bicep", 2017, 1, "Folder"), destination)
-    assert (source.isrcs, source.fan_uploads, len(finder.asked)) == (frozenset(isrcs), fan_uploads, lookups)
+    assert (set(source.isrcs), source.fan_uploads, len(finder.asked)) == (set(isrcs), fan_uploads, lookups)
 
 
 class FakeSoundCloud(FakeSpotify):

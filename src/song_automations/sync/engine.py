@@ -617,7 +617,7 @@ class SyncEngine:
             labels=track.labels,
             remixers=track.remixers,
         )
-        isrcs: frozenset[str] = frozenset()
+        isrcs: dict[str, int | None] = {}
         if destination == "soundcloud" and self._isrc_finder is not None:
             isrcs = self._isrc_finder.find(source, _first_artist(track))
         released = bool(isrcs) or self._state.has_exact_spotify_match(release.id, track.position)

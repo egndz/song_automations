@@ -95,13 +95,13 @@ def entry(id, title, artist="Bicep", seconds=300):
 @pytest.mark.parametrize(
     ("title", "results", "codes", "expected"),
     [
-        ("Glue", [entry(1, "Glue")], {"1": "gb-cfb-17-00231"}, {"GBCFB1700231"}),
-        ("Glue", [entry(1, "Glue"), entry(2, "Glue", seconds=301)], {"1": "A1", "2": "B2"}, {"A1", "B2"}),
-        ("Glue (Hardfloor Remix)", [entry(1, "Glue")], {"1": "A1"}, set()),
-        ("Glue", [entry(1, "Glue (Hardfloor Remix)")], {"1": "A1"}, set()),
-        ("Glue", [entry(1, "Glue", artist="Bicep Tribute Band")], {"1": "A1"}, set()),
-        ("Glue", [entry(1, "Glue")], {}, set()),
-        ("Glue", [], {}, set()),
+        ("Glue", [entry(1, "Glue")], {"1": "gb-cfb-17-00231"}, {"GBCFB1700231": 300_000}),
+        ("Glue", [entry(1, "Glue"), entry(2, "Glue", seconds=301)], {"1": "A1", "2": "B2"}, {"A1": 300_000, "B2": 301_000}),
+        ("Glue (Hardfloor Remix)", [entry(1, "Glue")], {"1": "A1"}, {}),
+        ("Glue", [entry(1, "Glue (Hardfloor Remix)")], {"1": "A1"}, {}),
+        ("Glue", [entry(1, "Glue", artist="Bicep Tribute Band")], {"1": "A1"}, {}),
+        ("Glue", [entry(1, "Glue")], {}, {}),
+        ("Glue", [], {}, {}),
     ],
 )
 def test_only_the_exact_version_gives_its_code(title, results, codes, expected):
@@ -125,8 +125,8 @@ def test_unreachable_catalogue_costs_coverage_not_the_sync(error):
     """The lookup gives up for the run, returns no codes and remembers nothing."""
     catalogue, cache = FakeCatalogue(error=error), MemoryCache()
     finder = IsrcFinder(catalogue, cache)
-    assert finder.find(SourceTrack(("Bicep",), "Glue"), "Bicep") == frozenset()
-    assert finder.find(SourceTrack(("Bicep",), "Opal"), "Bicep") == frozenset()
+    assert finder.find(SourceTrack(("Bicep",), "Glue"), "Bicep") == {}
+    assert finder.find(SourceTrack(("Bicep",), "Opal"), "Bicep") == {}
     assert catalogue.calls == 1
     assert cache.data == {}
 

@@ -311,7 +311,7 @@ def catalogue_upload(title="Katmandu (Remastered 2020)", uploader="YusufCatSteve
 )
 def test_same_recording_code_is_trusted_whatever_the_account(known, candidate, accepted):
     """An upload carrying the code of the record is the record; anything else still needs a trusted account."""
-    source = SourceTrack(("Cat Stevens",), "Katmandu", fan_uploads=False, isrcs=frozenset(known))
+    source = SourceTrack(("Cat Stevens",), "Katmandu", fan_uploads=False, isrcs=dict.fromkeys(known))
     outcome = evaluate(source, candidate)
     assert isinstance(outcome, Match) is accepted
     if accepted:
@@ -328,7 +328,7 @@ def test_same_recording_code_is_trusted_whatever_the_account(known, candidate, a
 )
 def test_verified_recording_wins_then_the_freely_playable_one(candidates, winner):
     """The upload with the recording code goes first, and between equals the one anybody can play."""
-    source = SourceTrack(("Bicep",), "Glue", fan_uploads=False, isrcs=frozenset({"GBCFB1700231"}))
+    source = SourceTrack(("Bicep",), "Glue", fan_uploads=False, isrcs={"GBCFB1700231": None})
     assert decide(source, candidates).match.candidate.id == winner
 
 
@@ -348,3 +348,22 @@ def test_preview_clip_length_is_not_the_track_length(access, ms, expected):
 def test_spotify_candidate_reads_the_recording_code(item, expected):
     """Search results carry the code, album listings do not."""
     assert spotify_candidate({"id": "1", "name": "Glue", "artists": [], **item}).isrc == expected
+
+
+@pytest.mark.parametrize(
+    ("discogs_ms", "catalogue_ms", "upload_ms", "access", "accepted"),
+    [
+        (269_000, 269_000, 103_000, "playable", False),
+        (None, 269_000, 103_000, "playable", False),
+        (269_000, None, 103_000, "playable", False),
+        (None, None, 103_000, "playable", True),
+        (269_000, 269_000, 270_000, "playable", True),
+        (269_000, 269_000, 30_000, "preview", True),
+        (269_000, 269_000, 30_000, "playable", False),
+    ],
+)
+def test_clip_posted_under_the_code_of_the_full_track_is_refused(discogs_ms, catalogue_ms, upload_ms, access, accepted):
+    """BICEP posts "GLUE // CLIP" with the code of Glue; the code is only trusted when the length fits."""
+    source = SourceTrack(("Bicep",), "Glue", duration_ms=discogs_ms, fan_uploads=False, isrcs={"GBCFB1700229": catalogue_ms})
+    clip = catalogue_upload(title="BICEP | GLUE // CLIP", uploader="BICEP", isrc="GBCFB1700229", access=access, ms=upload_ms)
+    assert isinstance(evaluate(source, clip), Match) is accepted

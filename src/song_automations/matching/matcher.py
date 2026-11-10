@@ -8,7 +8,7 @@ version agrees: the exact mix first, then the original, then any other mix.
 
 import re
 import unicodedata
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -114,9 +114,10 @@ class SourceTrack:
         fan_uploads: Whether uploads by strangers may match. Off when Spotify
             already carries the track, since fan uploads of released music
             turned out to be covers or tributes about as often as the record.
-        isrcs: Recording codes of this exact version, taken from a catalogue
-            that lists it. A candidate carrying one of them is the same
-            recording, whoever uploaded it.
+        isrcs: Recording codes of this exact version with the length the
+            catalogue gives for each, taken from a catalogue that lists it. A
+            candidate carrying one of them is the same recording, whoever
+            uploaded it.
     """
 
     artists: tuple[str, ...]
@@ -126,7 +127,7 @@ class SourceTrack:
     labels: tuple[str, ...] = ()
     remixers: tuple[str, ...] = ()
     fan_uploads: bool = True
-    isrcs: frozenset[str] = frozenset()
+    isrcs: Mapping[str, int | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -554,6 +555,24 @@ def _fan_upload_unverified(source: SourceTrack, candidate: Candidate) -> bool:
     return True
 
 
+def _is_cut(length: int | None, *full_lengths: int | None) -> bool:
+    """Checks whether an upload is too far from the length of the recording.
+
+    Labels post clips of a release under the code of the full track, so the
+    code alone does not show that the whole recording is there.
+
+    Args:
+        length: Length of the upload, None when unknown.
+        full_lengths: Lengths Discogs and the catalogue give, None when unknown.
+
+    Returns:
+        True when a known length differs from the upload by more than the tolerance.
+    """
+    if not length:
+        return False
+    return any(full and abs(full - length) > DURATION_TOLERANCE_MS for full in full_lengths)
+
+
 def _same_recording(source: SourceTrack, candidate: Candidate) -> Match:
     """Accepts a candidate that carries a recording code of the source.
 
@@ -595,6 +614,8 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         failed gate.
     """
     if candidate.isrc and candidate.isrc in source.isrcs:
+        if _is_cut(candidate.duration_ms, source.duration_ms, source.isrcs[candidate.isrc]):
+            return Rejection(candidate, "isrc_length")
         return _same_recording(source, candidate)
     marker = _rejected_marker(source, candidate)
     if marker:

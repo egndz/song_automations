@@ -67,8 +67,8 @@ class IsrcFinder:
         self._cache = cache
         self._failed = False
 
-    def find(self, source: SourceTrack, artist: str) -> frozenset[str]:
-        """Lists the recording codes of a track.
+    def find(self, source: SourceTrack, artist: str) -> dict[str, int | None]:
+        """Lists the recording codes of a track with the length of each recording.
 
         A catalogue that cannot be reached costs coverage, never correctness,
         so the failure is logged once and the sync carries on without codes.
@@ -78,24 +78,25 @@ class IsrcFinder:
             artist: Artist to search for.
 
         Returns:
-            Codes of the exact version, empty when the catalogue lacks it.
+            Length in milliseconds by code for the exact version, empty when
+            the catalogue lacks it.
         """
         key = f"isrc:{artist}|{source.title}"
         stored = self._cache.get_search_cache(PLATFORM, key)
         if stored is not None:
-            return frozenset(stored)
+            return dict(stored)
         if self._failed:
-            return frozenset()
+            return {}
         try:
             codes = self._lookup(source, artist)
         except (httpx.HTTPError, DeezerError) as error:
             self._failed = True
             logger.warning("Recording codes are unavailable for this run: %s", error)
-            return frozenset()
+            return {}
         self._cache.save_search_cache(PLATFORM, key, codes)
-        return frozenset(codes)
+        return dict(codes)
 
-    def _lookup(self, source: SourceTrack, artist: str) -> list[str]:
+    def _lookup(self, source: SourceTrack, artist: str) -> list[list]:
         """Searches the catalogue and reads the codes of the exact versions.
 
         Args:
@@ -103,7 +104,7 @@ class IsrcFinder:
             artist: Artist to search for.
 
         Returns:
-            Codes, best version first.
+            Pairs of code and length, best version first.
         """
         title = search_title(source.title)
         seen: dict[str, Candidate] = {}
@@ -113,5 +114,9 @@ class IsrcFinder:
         decision = decide(source, seen.values())
         accepted = ([decision.match] if decision.match else []) + decision.alternatives
         exact = [match for match in accepted if match.tier == Tier.EXACT][:MAX_VERSIONS]
-        codes = [normalize_isrc(self._client.track_raw(match.candidate.id).get("isrc")) for match in exact]
-        return list(dict.fromkeys(code for code in codes if code))
+        found: dict[str, int | None] = {}
+        for match in exact:
+            code = normalize_isrc(self._client.track_raw(match.candidate.id).get("isrc"))
+            if code:
+                found.setdefault(code, match.candidate.duration_ms)
+        return [[code, length] for code, length in found.items()]
