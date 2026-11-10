@@ -271,10 +271,162 @@ def test_restore_names_soundcloud_tracks_that_did_not_come_back(wired, flat, pla
     """Tracks SoundCloud no longer takes are counted in the output, Spotify has no such gap."""
     fake = snapshot(wired, platform, NAME, SAVED, CHANGED)
     fake.unavailable = {"2"}
-    output = flat(invoke(["restore", RUN, "--yes"]).output)
+    result = invoke(["restore", RUN, "--yes"])
+    output = flat(result.output)
     lost = platform == "soundcloud"
     assert ("1 saved tracks did not come back" in output) is lost
     assert ("2 of 3 tracks" in output) is lost
+    assert ("1 playlist is not exactly as saved" in output) is lost
+    assert result.exit_code == (1 if lost else 0)
+    assert f"song-automations restore {run_ids(wired.root)[0]}" in output
+
+
+@pytest.mark.parametrize(
+    ("quirk", "problem"),
+    [
+        ({"unavailable": {"2"}}, "did not come back"),
+        ({"reverses": True}, "not in the saved order"),
+    ],
+)
+@pytest.mark.parametrize("differing", [1, 2])
+def test_restore_that_ends_with_differences_exits_with_an_error(wired, flat, quirk, problem, differing):
+    """Every playlist that is not exactly as saved is counted, and the command does not report success."""
+    fake = wired.platforms["soundcloud"]
+    for number in range(2):
+        snapshot(wired, "soundcloud", f"Mix {number}", SAVED, CHANGED)
+    for name, value in quirk.items():
+        setattr(fake, name, value)
+    if differing == 1:
+        fake.playlists["Mix 1"] = list(SAVED)
+    result = invoke(["restore", RUN, "--yes"])
+    output = flat(result.output)
+    assert result.exit_code == 1
+    assert output.count(problem) == differing
+    assert f"{differing} playlist{'s are' if differing > 1 else ' is'} not exactly as saved" in output
+
+
+@pytest.mark.parametrize("platform", ["spotify", "soundcloud"])
+@pytest.mark.parametrize("flags", [["--yes"], ["--dry-run"], []])
+def test_two_saved_playlists_aimed_at_one_playlist_are_refused(wired, flat, platform, flags):
+    """When two saved playlists of one name would both be written into one playlist, nothing is written."""
+    fake = wired.platforms[platform]
+    store = SnapshotStore(wired.root, RUN)
+    for playlist_id, tracks in (("one", ["1", "2"]), ("two", ["3", "4"])):
+        store.save(platform, SimpleNamespace(id=playlist_id, name="Twin"), [fake.track(t) for t in tracks])
+    fake.playlists["Twin"] = ["9"]
+    fake.ids["Twin"] = "three"
+    result = invoke(["restore", RUN, *flags])
+    output = flat(result.output)
+    assert result.exit_code == 1
+    assert "2 saved playlists named 'Twin' would both be written into the one" in output
+    assert "Nothing was changed" in output
+    assert "playlists back?" not in output
+    assert fake.playlists["Twin"] == ["9"]
+    assert fake.writes == []
+    assert run_ids(wired.root) == [RUN]
+
+
+@pytest.mark.parametrize("platform", ["spotify", "soundcloud"])
+@pytest.mark.parametrize(
+    ("renamed", "recreated", "note", "action"),
+    [
+        (True, False, "now named 'Renamed'", "restore"),
+        (False, True, "same name, but not the playlist that was saved", "restore"),
+        (False, False, "", "restore"),
+    ],
+)
+def test_plan_table_says_when_the_playlist_is_not_plainly_the_saved_one(wired, flat, platform, renamed, recreated, note, action):
+    """A renamed playlist is restored in place, and one that only shares the name is pointed out."""
+    fake = snapshot(wired, platform, NAME, SAVED, CHANGED)
+    if renamed:
+        fake.rename(NAME, "Renamed")
+    if recreated:
+        del fake.playlists[NAME]
+        fake.create_playlist(NAME)
+        fake.playlists[NAME] = list(CHANGED)
+        fake.calls.clear()
+    result = invoke(["restore", RUN, "--yes"])
+    output = flat(result.output)
+    assert result.exit_code == 0
+    assert re.search(rf"Discogs - Electro\W+2\W+3\W+2\W+1\W+{action}\W+{re.escape(note)}", output), output
+    assert fake.playlists == {"Renamed" if renamed else NAME: SAVED}
+    assert "create_playlist" not in fake.calls
+
+
+@pytest.mark.parametrize("platform", ["spotify", "soundcloud"])
+@pytest.mark.parametrize("meanwhile", [["1", "9", "50"], ["77", "78"], []])
+def test_a_playlist_changed_while_the_question_waits_is_saved_as_it_is_then(wired, flat, monkeypatch, platform, meanwhile):
+    """What the playlist holds when the owner says yes is what the undo run keeps, not what the plan showed."""
+    fake = snapshot(wired, platform, NAME, SAVED, CHANGED)
+
+    def confirm(*args, **kwargs):
+        """Stands in for the owner answering yes after the playlist changed.
+
+        Args:
+            *args: Ignored.
+            **kwargs: Ignored.
+
+        Returns:
+            True, the answer yes.
+        """
+        fake.playlists[NAME] = list(meanwhile)
+        return True
+
+    monkeypatch.setattr(cli.typer, "confirm", confirm)
+    result = invoke(["restore", RUN])
+    undo_run = run_ids(wired.root)[0]
+    assert result.exit_code == 0
+    assert fake.playlists[NAME] == SAVED
+    assert "It had changed since the plan was shown" in flat(result.output)
+    assert load_run(wired.root, undo_run)[0].track_ids == meanwhile
+    assert invoke(["restore", undo_run, "--yes"]).exit_code == 0
+    assert fake.playlists[NAME] == meanwhile
+
+
+@pytest.mark.parametrize(
+    ("platform", "call", "skip", "touched"),
+    [
+        ("spotify", "add_tracks_to_playlist", 1, True),
+        ("spotify", "remove_tracks_from_playlist", 0, True),
+        ("soundcloud", "set_playlist_tracks", 1, True),
+        ("spotify", "get_playlist_tracks", 4, False),
+        ("soundcloud", "get_playlist_tracks", 5, False),
+    ],
+)
+@pytest.mark.parametrize(
+    ("error", "exit_code", "explained"),
+    [
+        (RuntimeError("connection reset"), 1, "Reason: connection reset"),
+        (RateLimitedError("Spotify", 3600), 2, "Spotify has rate limited this app"),
+        (ReauthRequiredError("Spotify"), 2, "Your Spotify login has expired"),
+        (KeyboardInterrupt(), 1, "Reason: KeyboardInterrupt"),
+    ],
+    ids=lambda value: type(value).__name__,
+)
+def test_a_restore_that_fails_partway_names_the_playlist_and_how_to_undo(
+    wired, flat, platform, call, skip, touched, error, exit_code, explained
+):
+    """The first playlist is restored, the second is named as half restored or untouched, the third as not restored."""
+    fake = wired.platforms[platform]
+    for name in ("Mix A", "Mix B", "Mix C"):
+        snapshot(wired, platform, name, SAVED, CHANGED)
+    fake.playlists["Mix A"] = ["1", "2"]
+    fake.fail(call, error, skip)
+    result = invoke(["restore", RUN, "--yes"])
+    output = flat(result.output)
+    safety_run = run_ids(wired.root)[0]
+    assert result.exit_code == exit_code
+    assert fake.playlists["Mix A"] == SAVED
+    assert fake.playlists["Mix C"] == CHANGED
+    assert f"The restore stopped at the {platform} playlist 'Mix B'" in output
+    assert ("It may hold only part of the saved tracks" in output) is touched
+    assert ("It was left as it was" in output) is not touched
+    assert "Not restored: Mix C" in output
+    assert explained in output
+    assert safety_run != RUN
+    assert f"Undo with: song-automations restore {safety_run}" in output
+    assert "The next sync rebuilds" not in output
+    assert [saved.playlist_name for saved in load_run(wired.root, safety_run)] == ["Mix A", "Mix B"][: 2 if touched else 1]
 
 
 @pytest.mark.parametrize("platform", ["spotify", "soundcloud"])
@@ -308,19 +460,10 @@ def test_restore_stops_when_it_cannot_save_the_current_state(wired, flat, monkey
     ],
     ids=lambda value: type(value).__name__,
 )
-def test_restore_explains_a_platform_that_refuses(wired, flat, monkeypatch, error, exit_code, message):
+def test_restore_explains_a_platform_that_refuses(wired, flat, error, exit_code, message):
     """A rate limit or an expired login during a restore ends with the usual message and exit code."""
     fake = snapshot(wired, "spotify", NAME, SAVED, CHANGED)
-
-    def refuse(name):
-        """Stands in for a platform that refuses the request.
-
-        Args:
-            name: Playlist name.
-        """
-        raise error
-
-    monkeypatch.setattr(fake, "find_playlist_by_name", refuse)
+    fake.fail("get_user_playlists", error)
     result = invoke(["restore", RUN, "--yes"])
     assert result.exit_code == exit_code
     assert message in flat(result.output)
@@ -413,6 +556,21 @@ def test_both_platforms_of_sync_all_save_under_one_run(monkeypatch, root, throug
     assert {saved.platform for run_id in run_ids(root) for saved in load_run(root, run_id)} == {"spotify", "soundcloud"}
 
 
+class ListingSpotify(FakeSpotify):
+    """Spotify stand-in of the sync tests that can also list its playlists."""
+
+    def get_user_playlists(self, prefix=None):
+        """Lists the playlists of the account.
+
+        Args:
+            prefix: Unused.
+
+        Returns:
+            Every playlist.
+        """
+        return [self.find_playlist_by_name(name) for name in self.playlists]
+
+
 @pytest.mark.parametrize(
     ("existing", "after_sync", "snapshotted"),
     [
@@ -424,7 +582,7 @@ def test_both_platforms_of_sync_all_save_under_one_run(monkeypatch, root, throug
 def test_a_sync_can_be_undone_from_the_command_line(wired, flat, monkeypatch, existing, after_sync, snapshotted):
     """A sync that rebuilds a playlist prints the restore command, and running it brings the old playlist back."""
     discogs = FakeDiscogs({"Electro": [discogs_track()]})
-    spotify = FakeSpotify({NAME: list(existing)}, {QUERY: [item("right", "Glue")]})
+    spotify = ListingSpotify({NAME: list(existing)}, {QUERY: [item("right", "Glue")]})
     map_folder(StateTracker(wired.settings.db_path), discogs, "Electro")
     monkeypatch.setattr(cli, "DiscogsClient", lambda settings: discogs)
     monkeypatch.setattr(cli, "SpotifyClient", lambda settings: spotify)

@@ -30,6 +30,8 @@ BEFORE_SYNC = "sync"
 BEFORE_DELETE = "delete"
 BEFORE_RESTORE = "restore"
 SPOTIFY = "spotify"
+FOUND_BY_ID = "id"
+FOUND_BY_NAME = "name"
 PRIVATE_FOLDER = 0o700
 PRIVATE_FILE = 0o600
 
@@ -134,6 +136,7 @@ class RestoreStep:
         add: Track ids to add after the kept tracks, in order.
         put_back: Saved tracks the playlist lacks now.
         taken_out: Tracks in the playlist now that the snapshot does not hold.
+        found_by: How the playlist was found: id, name, or None when it is gone.
     """
 
     snapshot: Snapshot
@@ -144,6 +147,23 @@ class RestoreStep:
     add: list[str]
     put_back: list[SavedTrack]
     taken_out: list[SavedTrack]
+    found_by: str | None = None
+
+    @property
+    def note(self) -> str:
+        """Says when the playlist found is not plainly the one that was saved.
+
+        Returns:
+            A remark for a playlist that was renamed since, or for one that only
+            shares the saved name and has another id. Empty otherwise.
+        """
+        if self.playlist is None:
+            return ""
+        if self.found_by == FOUND_BY_NAME and str(self.playlist.id) != self.snapshot.playlist_id:
+            return "same name, but not the playlist that was saved"
+        if self.found_by == FOUND_BY_ID and name_of(self.playlist) != self.snapshot.playlist_name:
+            return f"now named '{name_of(self.playlist)}'"
+        return ""
 
     @property
     def changes(self) -> bool:
@@ -176,11 +196,14 @@ class RestoreOutcome:
         lost: Saved tracks the platform did not take back.
         left_over: Tracks still in the playlist that the snapshot does not hold.
         in_order: Whether the playlist holds exactly the saved tracks in the saved order.
+        changed_since_preview: Whether the playlist held something else right
+            before the restore than when the plan was shown.
     """
 
     lost: list[SavedTrack] = field(default_factory=list)
     left_over: list[SavedTrack] = field(default_factory=list)
     in_order: bool = True
+    changed_since_preview: bool = False
 
     @property
     def problems(self) -> list[str]:
@@ -200,6 +223,42 @@ class RestoreOutcome:
         if not found and not self.in_order:
             found.append("The saved tracks are back, but not in the saved order.")
         return found
+
+
+@dataclass(frozen=True)
+class AbsentPlaylist:
+    """Stands in for a playlist that does not exist, so that fact can be saved.
+
+    Args:
+        id: Id the playlist had when it was saved.
+        name: Name the playlist had when it was saved.
+        public: Whether the playlist was public, when the snapshot says so.
+    """
+
+    id: str
+    name: str
+    public: bool | None = None
+
+
+class RestoreStoppedError(RuntimeError):
+    """A restore could not finish one playlist.
+
+    Args:
+        snapshot: The saved playlist that was being put back.
+        touched: Whether the playlist on the platform may already have been changed.
+    """
+
+    def __init__(self, snapshot: Snapshot, touched: bool) -> None:
+        self.snapshot = snapshot
+        self.touched = touched
+        state = (
+            "It may hold only part of the saved tracks. Run the restore again to finish it."
+            if touched
+            else "It was left as it was."
+        )
+        super().__init__(
+            f"The restore stopped at the {snapshot.platform} playlist '{snapshot.playlist_name}'. {state}"
+        )
 
 
 def _clean(text: str) -> str:
@@ -785,7 +844,7 @@ def _lacking(wanted: Collection[SavedTrack], held: Collection[SavedTrack]) -> li
     return lacking
 
 
-def plan_restore(snapshot: Snapshot, client) -> RestoreStep:
+def plan_restore(snapshot: Snapshot, client, playlist=None, found_by: str | None = None) -> RestoreStep:
     """Compares a snapshot with the playlist as it is now.
 
     Reads the playlist once and changes nothing.
@@ -793,11 +852,12 @@ def plan_restore(snapshot: Snapshot, client) -> RestoreStep:
     Args:
         snapshot: The saved playlist.
         client: Client of the platform the snapshot belongs to.
+        playlist: The playlist on the platform, or None when it no longer exists.
+        found_by: How the playlist was found: id or name.
 
     Returns:
         What putting the playlist back involves.
     """
-    playlist = client.find_playlist_by_name(snapshot.playlist_name)
     current = list(client.get_playlist_tracks(playlist.id)) if playlist is not None else []
     now = [saved_track(track) for track in current]
     keep, remove, add = split_restore([track.id for track in now], snapshot.track_ids)
@@ -810,7 +870,82 @@ def plan_restore(snapshot: Snapshot, client) -> RestoreStep:
         add=add,
         put_back=_lacking(snapshot.tracks, now),
         taken_out=_lacking(now, snapshot.tracks),
+        found_by=found_by if playlist is not None else None,
     )
+
+
+def plan_restores(snapshots: list[Snapshot], clients: dict) -> list[RestoreStep]:
+    """Finds the playlist of every snapshot and compares the two.
+
+    The playlists of a platform are listed once. A saved playlist is found by
+    its id first, so one that was renamed since is restored in place. Only
+    when that id is gone is a playlist with the saved name used, and never one
+    that another snapshot of the same restore already found by id.
+
+    Args:
+        snapshots: The saved playlists to put back.
+        clients: Platform client by platform name.
+
+    Returns:
+        One planned restore per snapshot, in the order given.
+    """
+    live = {
+        platform: list(clients[platform].get_user_playlists())
+        for platform in dict.fromkeys(snapshot.platform for snapshot in snapshots)
+    }
+    by_id = {
+        platform: {str(playlist.id): playlist for playlist in playlists}
+        for platform, playlists in live.items()
+    }
+    claimed = {
+        (snapshot.platform, snapshot.playlist_id)
+        for snapshot in snapshots
+        if snapshot.playlist_id in by_id[snapshot.platform]
+    }
+    steps = []
+    for snapshot in snapshots:
+        playlist = by_id[snapshot.platform].get(snapshot.playlist_id)
+        found_by = FOUND_BY_ID
+        if playlist is None:
+            found_by = FOUND_BY_NAME
+            playlist = next(
+                (
+                    candidate
+                    for candidate in live[snapshot.platform]
+                    if name_of(candidate) == snapshot.playlist_name
+                    and (snapshot.platform, str(candidate.id)) not in claimed
+                ),
+                None,
+            )
+        steps.append(plan_restore(snapshot, clients[snapshot.platform], playlist, found_by))
+    return steps
+
+
+def shared_targets(steps: list[RestoreStep]) -> list[str]:
+    """Finds saved playlists that would be written into one and the same playlist.
+
+    Two playlists that had the same name when they were saved, and whose ids
+    are both gone, both find the one playlist that carries that name now.
+    Writing both would leave only the second, so neither may be written.
+
+    Args:
+        steps: The planned restores that would change something.
+
+    Returns:
+        One sentence per playlist that more than one snapshot points at.
+    """
+    targets: dict[tuple[str, str], list[RestoreStep]] = {}
+    for step in steps:
+        if step.playlist is not None:
+            targets.setdefault((step.snapshot.platform, str(step.playlist.id)), []).append(step)
+    return [
+        f"{len(sharing)} saved playlists named '{sharing[0].snapshot.playlist_name}' would both be "
+        f"written into the one {platform} playlist '{name_of(sharing[0].playlist)}' that exists now. "
+        "Nothing was changed. Rename that playlist on the platform and run the restore again, "
+        "so each saved playlist is recreated on its own."
+        for (platform, _), sharing in targets.items()
+        if len(sharing) > 1
+    ]
 
 
 def describe_track(track: SavedTrack) -> str:
@@ -847,13 +982,18 @@ def change_lines(step: RestoreStep, limit: int = 10) -> list[str]:
 def apply_restore(step: RestoreStep, client, store: SnapshotStore) -> RestoreOutcome:
     """Puts one playlist back as its snapshot saved it.
 
-    A playlist that no longer exists is created under its saved name. What the
-    playlist holds now is saved first, so the restore can be undone. Spotify
-    takes tracks by address and SoundCloud takes the whole list of numeric ids,
-    the same way a sync writes them. SoundCloud drops tracks that are gone
-    without saying so, so its playlist is read once more afterwards and
-    compared with the snapshot. Spotify either takes a change or raises, so
-    its playlist is not read again.
+    The plan was made before the owner was asked, and the playlist can have
+    changed while the question waited. So the playlist is read again here,
+    that state is what is saved for undoing the restore, and the changes are
+    worked out from it. Nothing is written before that snapshot exists. A
+    playlist that no longer exists is saved as holding nothing and then created
+    under its saved name, so a snapshot that fails leaves no empty playlist.
+
+    Spotify takes tracks by address and SoundCloud takes the whole list of
+    numeric ids, the same way a sync writes them. SoundCloud drops tracks that
+    are gone without saying so, so its playlist is read once more afterwards
+    and compared with the snapshot. Spotify either takes a change or raises,
+    so its playlist is not read again.
 
     Args:
         step: The planned restore.
@@ -864,29 +1004,48 @@ def apply_restore(step: RestoreStep, client, store: SnapshotStore) -> RestoreOut
         How the playlist differs from the snapshot afterwards, if at all.
 
     Raises:
-        SnapshotError: When the current state could not be saved. The playlist
-            is then left unchanged.
+        RestoreStoppedError: When reading, saving or writing failed. It says
+            whether the playlist may already have been changed and carries
+            what went wrong as its cause.
     """
     snapshot = step.snapshot
-    playlist = step.playlist
-    if playlist is None:
-        playlist = client.create_playlist(
-            name=snapshot.playlist_name,
-            description=f"Restored from the snapshot of {snapshot.run_id}",
-            public=snapshot.public is not False,
+    touched = False
+    try:
+        playlist = step.playlist
+        if playlist is None:
+            absent = AbsentPlaylist(snapshot.playlist_id, snapshot.playlist_name, snapshot.public)
+            store.save(snapshot.platform, absent, [], reason=BEFORE_RESTORE)
+            playlist = client.create_playlist(
+                name=snapshot.playlist_name,
+                description=f"Restored from the snapshot of {snapshot.run_id}",
+                public=snapshot.public is not False,
+            )
+            touched = True
+            current = []
+        else:
+            current = list(client.get_playlist_tracks(playlist.id))
+        now = [saved_track(track) for track in current]
+        changed = [track.id for track in now] != [str(track.id) for track in step.current]
+        keep, remove, add = split_restore([track.id for track in now], snapshot.track_ids)
+        if not (remove or add):
+            return RestoreOutcome(changed_since_preview=changed)
+        if step.playlist is not None:
+            store.save(snapshot.platform, playlist, current, reason=BEFORE_RESTORE)
+        touched = True
+        if snapshot.platform == SPOTIFY:
+            uri = "spotify:track:{}".format
+            if remove:
+                client.remove_tracks_from_playlist(playlist.id, [uri(track_id) for track_id in remove])
+            if add:
+                client.add_tracks_to_playlist(playlist.id, [uri(track_id) for track_id in add])
+            return RestoreOutcome(changed_since_preview=changed)
+        client.set_playlist_tracks(playlist.id, [int(track_id) for track_id in snapshot.track_ids])
+        held = [saved_track(track) for track in client.get_playlist_tracks(playlist.id)]
+        return RestoreOutcome(
+            lost=_lacking(snapshot.tracks, held),
+            left_over=_lacking(held, snapshot.tracks),
+            in_order=[track.id for track in held] == snapshot.track_ids,
+            changed_since_preview=changed,
         )
-    store.save(snapshot.platform, playlist, step.current, reason=BEFORE_RESTORE)
-    if snapshot.platform == SPOTIFY:
-        uri = "spotify:track:{}".format
-        if step.remove:
-            client.remove_tracks_from_playlist(playlist.id, [uri(track_id) for track_id in step.remove])
-        if step.add:
-            client.add_tracks_to_playlist(playlist.id, [uri(track_id) for track_id in step.add])
-        return RestoreOutcome()
-    client.set_playlist_tracks(playlist.id, [int(track_id) for track_id in snapshot.track_ids])
-    held = [saved_track(track) for track in client.get_playlist_tracks(playlist.id)]
-    return RestoreOutcome(
-        lost=_lacking(snapshot.tracks, held),
-        left_over=_lacking(held, snapshot.tracks),
-        in_order=[track.id for track in held] == snapshot.track_ids,
-    )
+    except (Exception, KeyboardInterrupt) as error:
+        raise RestoreStoppedError(snapshot, touched) from error

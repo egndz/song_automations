@@ -33,16 +33,18 @@ from song_automations.reports.missing import generate_missing_report
 from song_automations.schedule import schedule_app
 from song_automations.snapshots import (
     RestoreStep,
+    RestoreStoppedError,
     SnapshotError,
     SnapshotStore,
     apply_restore,
     change_lines,
     list_runs,
     load_run,
-    plan_restore,
+    plan_restores,
     restore_hint,
     select_snapshots,
     shared_run,
+    shared_targets,
 )
 from song_automations.state.tracker import StateTracker
 from song_automations.sync.engine import OperationType, SyncEngine, SyncResult
@@ -650,7 +652,8 @@ def _restore_table(run_id: str, steps: list[RestoreStep]) -> Table:
         steps: One planned restore per playlist.
 
     Returns:
-        A table with one row per playlist.
+        A table with one row per playlist, and a note column when a playlist
+        found is not plainly the one that was saved.
     """
     table = Table(title=f"Restore of run {run_id}")
     table.add_column("Platform", style="magenta")
@@ -660,6 +663,9 @@ def _restore_table(run_id: str, steps: list[RestoreStep]) -> Table:
     table.add_column("Put back", justify="right")
     table.add_column("Take out", justify="right")
     table.add_column("Action", style="cyan")
+    noted = any(step.note for step in steps)
+    if noted:
+        table.add_column("Note", style="yellow")
     for step in steps:
         table.add_row(
             PLATFORM_LABELS.get(step.snapshot.platform, step.snapshot.platform),
@@ -669,6 +675,7 @@ def _restore_table(run_id: str, steps: list[RestoreStep]) -> Table:
             str(len(step.put_back)),
             str(len(step.taken_out)),
             step.action,
+            *([escape(step.note)] if noted else []),
         )
     return table
 
@@ -748,7 +755,7 @@ def restore(
 
     with _friendly_errors():
         clients = {name: _make_client(settings, name) for name in needed}
-        steps = [plan_restore(snapshot, clients[snapshot.platform]) for snapshot in saved]
+        steps = plan_restores(saved, clients)
         console.print(_restore_table(run_id, steps))
         for step in steps:
             lines = change_lines(step)
@@ -761,6 +768,11 @@ def restore(
         if not pending:
             console.print("[green]Every playlist already matches the snapshot. Nothing to restore.[/green]")
             return
+        clashes = shared_targets(pending)
+        for clash in clashes:
+            console.print(f"[red]Error:[/red] {escape(clash)}")
+        if clashes:
+            raise typer.Exit(1)
         if dry_run:
             console.print("[yellow]DRY RUN - No changes were made[/yellow]")
             return
@@ -768,22 +780,47 @@ def restore(
             typer.confirm(f"Put {len(pending)} playlist{'s' if len(pending) != 1 else ''} back?", abort=True)
 
         store = SnapshotStore(settings.snapshots_dir)
+        differing = 0
         try:
-            for step in pending:
-                outcome = apply_restore(step, clients[step.snapshot.platform], store)
+            for index, step in enumerate(pending):
                 label = PLATFORM_LABELS[step.snapshot.platform]
+                try:
+                    outcome = apply_restore(step, clients[step.snapshot.platform], store)
+                except RestoreStoppedError as stopped:
+                    console.print(f"[red]{escape(str(stopped))}[/red]")
+                    waiting = [escape(later.snapshot.playlist_name) for later in pending[index + 1 :]]
+                    if waiting:
+                        console.print(f"[yellow]Not restored: {', '.join(waiting)}[/yellow]")
+                    cause = stopped.__cause__
+                    if isinstance(cause, (*RUN_STOPPING_ERRORS, SnapshotError)):
+                        raise cause from None
+                    logger.info("Restore stopped", exc_info=stopped)
+                    console.print(f"[red]Reason: {escape(str(cause) or type(cause).__name__)}[/red]")
+                    raise typer.Exit(1) from stopped
                 console.print(
                     f"[green]Restored[/green] {escape(step.snapshot.playlist_name)} on {label} "
                     f"({len(step.snapshot.tracks) - len(outcome.lost)} of {len(step.snapshot.tracks)} tracks)"
                 )
+                if outcome.changed_since_preview:
+                    console.print(
+                        "[dim]It had changed since the plan was shown. "
+                        "What it held right before the restore is what was saved.[/dim]"
+                    )
                 for problem in outcome.problems:
                     console.print(f"[yellow]{problem}[/yellow]")
+                differing += bool(outcome.problems)
         finally:
             if store.hint:
                 console.print(f"[dim]{escape(store.hint)}[/dim]")
         console.print(
             "[dim]The next sync rebuilds these playlists from your Discogs folders again.[/dim]"
         )
+        if differing:
+            console.print(
+                f"[red]{differing} playlist{'s are' if differing != 1 else ' is'} not exactly as saved. "
+                "See the warnings above.[/red]"
+            )
+            raise typer.Exit(1)
 
 
 @report_app.command("matches")
