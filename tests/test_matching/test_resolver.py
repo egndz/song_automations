@@ -6,6 +6,7 @@ from song_automations.matching.matcher import SourceTrack, Tier
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
     SpotifySearcher,
+    query_title,
     resolve_release,
     search_title,
 )
@@ -322,3 +323,84 @@ def test_gated_view_reuses_the_stored_searches(allow_gated):
     searcher.search("Bicep Glue")
     assert [c.id for c in searcher.including_gated().search("Bicep Glue")] == ["1"]
     assert client.searches == 1
+
+
+@pytest.mark.parametrize(
+    ("title", "bare", "wanted"),
+    [
+        ("Glue (Original Mix)", "Glue", "Glue"),
+        ('"Heroes"', "Heroes", "Heroes"),
+        ("(Intro)", "", "(Intro)"),
+        ("[Untitled]", "", "[Untitled]"),
+        ("[Bonus Beats] - Dub Chant", "Dub Chant", "Dub Chant"),
+        ('""', "", ""),
+        ("", "", ""),
+    ],
+)
+def test_title_made_of_annotations_is_searched_whole(title, bare, wanted):
+    """A title with nothing outside its brackets keeps them, and only a title without text is empty."""
+    assert (search_title(title), query_title(title)) == (bare, wanted)
+
+
+@pytest.mark.parametrize(
+    ("artist", "title", "expected"),
+    [
+        ('"Weird Al" Yankovic', "Eat It", ['track:"Eat It" artist:"Weird Al Yankovic"']),
+        ('Lee "Scratch" Perry', "Dreadlocks In Moonlight", ['track:"Dreadlocks In Moonlight" artist:"Lee Scratch Perry"']),
+        ("David Bowie", '"Heroes"', ['track:"Heroes" artist:"David Bowie"']),
+        ("Burial", "(Untitled)", ['track:"(Untitled)" artist:"Burial"']),
+        ("Bicep", '""', []),
+        ("Bicep", "", []),
+        ('"', "Glue", []),
+        ("", "Glue", []),
+    ],
+)
+def test_spotify_query_fields_are_never_broken_or_empty(artist, title, expected):
+    """Quotes are dropped from both fields, and no query is sent when a field would be empty."""
+    assert SpotifySearcher(FakeSpotify(), MemoryCache()).track_queries(artist, title) == expected
+
+
+@pytest.mark.parametrize(
+    ("artist", "release_title", "expected"),
+    [
+        ('Lee "Scratch" Perry', "Super Ape", [("album", 'album:"Super Ape" artist:"Lee Scratch Perry"')]),
+        ("David Bowie", '"Heroes"', [("album", 'album:"Heroes" artist:"David Bowie"')]),
+        ("David Bowie", '""', []),
+        ("", "Isles", []),
+    ],
+)
+def test_spotify_album_query_is_never_broken_or_empty(artist, release_title, expected):
+    """The album search drops quotes and is skipped when a field would be empty."""
+    client = FakeSpotify()
+    SpotifySearcher(client, MemoryCache()).release_candidates(artist, release_title, ())
+    assert client.calls == expected
+
+
+@pytest.mark.parametrize(
+    ("artist", "title", "expected"),
+    [
+        ("Bicep", "Glue (Original Mix)", ["Bicep Glue", "Bicep Glue (Original Mix)", "Glue"]),
+        ("Burial", "(Untitled)", ["Burial (Untitled)", "(Untitled)"]),
+        ("", "Glue", ["Glue"]),
+        ("Bicep", '""', []),
+        ("Bicep", "", []),
+    ],
+)
+def test_soundcloud_never_sends_an_empty_query(artist, title, expected):
+    """A title without text is not searched, and a title of annotations is searched whole."""
+    assert SoundCloudSearcher(FakeSoundCloud(), MemoryCache()).track_queries(artist, title) == expected
+
+
+@pytest.mark.parametrize(("title", "searches"), [("Glue", 3), ("(Untitled)", 3), ('""', 0)])
+def test_alias_search_needs_a_title(title, searches):
+    """A title without text spends no search on the other names of the artist either."""
+    client = StockedSoundCloud([])
+    resolve_release(
+        SoundCloudSearcher(client, MemoryCache()),
+        [SourceTrack(("Bicep",), title)],
+        ["Bicep"],
+        "Bicep",
+        "Isles",
+        alias_lookup=lambda index: ("Feel My Bicep",),
+    )
+    assert client.searches == searches

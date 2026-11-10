@@ -14,9 +14,10 @@ from song_automations.matching.matcher import (
     decide,
     normalize_isrc,
 )
-from song_automations.matching.resolver import SearchCache, search_title
+from song_automations.matching.resolver import SearchCache, query_title, unquoted
 
 MAX_VERSIONS = 3
+MAX_ERRORS_IN_A_ROW = 3
 PLATFORM = "deezer"
 
 logger = logging.getLogger(__name__)
@@ -108,11 +109,15 @@ class IsrcFinder:
             artist: Artist to search for.
 
         Returns:
-            Pairs of code and length, best version first.
+            Pairs of code and length, best version first. Nothing is searched
+            when the artist or the title has no text, since an empty field
+            would match any track.
         """
-        title = search_title(source.title)
+        name, title = unquoted(artist), query_title(source.title)
+        if not name or not title:
+            return []
         seen: dict[str, Candidate] = {}
-        for query in (f'artist:"{artist}" track:"{title}"', f"{artist} {title}"):
+        for query in (f'artist:"{name}" track:"{title}"', f"{name} {title}"):
             for item in self._client.search_raw(query):
                 seen.setdefault(str(item.get("id")), deezer_candidate(item))
         decision = decide(source, seen.values())

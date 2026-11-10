@@ -36,6 +36,18 @@ class SearchCache(Protocol):
     def save_search_cache(self, platform: str, key: str, payload: list | dict) -> None: ...
 
 
+def unquoted(text: str) -> str:
+    """Removes double quotes, which would end a quoted query field early.
+
+    Args:
+        text: Artist, title or release title.
+
+    Returns:
+        Text without double quotes, with single spaces.
+    """
+    return " ".join((text or "").replace('"', " ").split())
+
+
 def search_title(title: str) -> str:
     """Reduces a title to what is worth typing into a search box.
 
@@ -43,11 +55,12 @@ def search_title(title: str) -> str:
         title: Raw title.
 
     Returns:
-        Title without annotations or quotes.
+        Title without annotations or quotes, empty when the title is nothing
+        but annotations.
     """
     stripped = re.sub(r"[(\[][^)\]]*[)\]]", " ", title or "")
-    stripped = re.split(r"\s+-\s+|\s+=\s+", stripped)[0]
-    return " ".join(stripped.replace('"', " ").split())
+    segments = [unquoted(segment) for segment in re.split(r"\s+-\s+|\s+=\s+", stripped)]
+    return next((segment for segment in segments if segment), "")
 
 
 def raw_title(title: str) -> str:
@@ -59,7 +72,20 @@ def raw_title(title: str) -> str:
     Returns:
         Title without quotes.
     """
-    return " ".join((title or "").replace('"', " ").split())
+    return unquoted(title)
+
+
+def query_title(title: str) -> str:
+    """Picks the title to search for.
+
+    Args:
+        title: Raw title.
+
+    Returns:
+        The bare title, or the whole title when it is nothing but annotations,
+        such as "(Intro)". Empty only when the title has no text at all.
+    """
+    return search_title(title) or raw_title(title)
 
 
 class SpotifySearcher:
@@ -107,9 +133,10 @@ class SpotifySearcher:
         Returns:
             Candidates from the matching albums.
         """
-        if not artist:
+        name, album_title = unquoted(artist), raw_title(release_title)
+        if not name or not album_title:
             return []
-        query = f'album:"{raw_title(release_title)}" artist:"{artist}"'
+        query = f'album:"{album_title}" artist:"{name}"'
         albums = self._cached(
             f"album:{query}", lambda: self._client.search_raw(query, kind="album")
         )
@@ -137,9 +164,13 @@ class SpotifySearcher:
             title: Track title.
 
         Returns:
-            Queries to try in order.
+            Queries to try in order, none when the artist or the title has no
+            text, since an empty field would match any track.
         """
-        return [f'track:"{search_title(title)}" artist:"{artist}"']
+        name, wanted = unquoted(artist), query_title(title)
+        if not name or not wanted:
+            return []
+        return [f'track:"{wanted}" artist:"{name}"']
 
     def search(self, query: str) -> list[Candidate]:
         """Runs one track search.
@@ -265,10 +296,14 @@ class SoundCloudSearcher:
             title: Track title.
 
         Returns:
-            Queries to try in order.
+            Queries to try in order, none when the title has no text, since
+            an empty query would return unrelated tracks.
         """
-        base, raw = search_title(title), raw_title(title)
-        return list(dict.fromkeys([f"{artist} {base}", f"{artist} {raw}", base]))
+        base, raw = query_title(title), raw_title(title)
+        if not base:
+            return []
+        queries = [f"{artist} {base}", f"{artist} {raw}", base]
+        return list(dict.fromkeys(query.strip() for query in queries))
 
     def search(self, query: str) -> list[Candidate]:
         """Runs one track search.
@@ -338,9 +373,10 @@ def resolve_release(
             if names:
                 source = replace(source, aliases=tuple(names))
                 decision = decide(source, seen)
-                if decision.match is None:
+                wanted = query_title(source.title)
+                if decision.match is None and wanted:
                     for name in names[: searcher.alias_searches]:
-                        query = f"{name} {search_title(source.title)}"
+                        query = f"{name} {wanted}"
                         seen += [c for c in searcher.search(query) if c.id not in blocked]
                     decision = decide(source, seen)
         decisions.append(decision)

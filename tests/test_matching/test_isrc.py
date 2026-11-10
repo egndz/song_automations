@@ -44,11 +44,14 @@ class FakeCatalogue:
         results: Tracks every search returns.
         codes: Recording code by track id.
         error: Raised by every request when set.
+        broken: Titles whose searches get a bad answer.
     """
 
-    def __init__(self, results=(), codes=None, error=None) -> None:
+    def __init__(self, results=(), codes=None, error=None, broken=()) -> None:
         self.results, self.codes, self.error = list(results), codes or {}, error
+        self.broken = set(broken)
         self.calls = 0
+        self.queries = []
 
     def search_raw(self, query):
         """Searches.
@@ -58,10 +61,16 @@ class FakeCatalogue:
 
         Returns:
             Tracks.
+
+        Raises:
+            DeezerError: If the query is for a broken title.
         """
         self.calls += 1
+        self.queries.append(query)
         if self.error:
             raise self.error
+        if any(title in query for title in self.broken):
+            raise DeezerError("answer is not JSON")
         return self.results
 
     def track_raw(self, track_id):
@@ -148,3 +157,25 @@ def test_error_about_one_track_only_skips_that_track(error):
     assert finder.find(SourceTrack(("Bicep",), "Opal"), "Bicep") == {}
     assert catalogue.calls == 2
     assert cache.data == {}
+
+
+@pytest.mark.parametrize(
+    ("artist", "title", "expected"),
+    [
+        ("Bicep", "Glue (Original Mix)", ['artist:"Bicep" track:"Glue"', "Bicep Glue"]),
+        (
+            'Lee "Scratch" Perry',
+            "Dreadlocks In Moonlight",
+            ['artist:"Lee Scratch Perry" track:"Dreadlocks In Moonlight"', "Lee Scratch Perry Dreadlocks In Moonlight"],
+        ),
+        ("David Bowie", '"Heroes"', ['artist:"David Bowie" track:"Heroes"', "David Bowie Heroes"]),
+        ("Burial", "(Untitled)", ['artist:"Burial" track:"(Untitled)"', "Burial (Untitled)"]),
+        ("Bicep", '""', []),
+        ("", "Glue", []),
+    ],
+)
+def test_catalogue_query_fields_are_never_broken_or_empty(artist, title, expected):
+    """Quotes are dropped from both fields, and nothing is searched when a field would be empty."""
+    catalogue = FakeCatalogue()
+    assert IsrcFinder(catalogue, MemoryCache()).find(SourceTrack((artist,), title), artist) == {}
+    assert catalogue.queries == expected
