@@ -473,3 +473,79 @@ def test_snapshots_are_narrowed_by_platform_and_playlist(root, platforms, playli
             select_snapshots(loaded, platforms, playlist)
     else:
         assert [snapshot.playlist_name for snapshot in select_snapshots(loaded, platforms, playlist)] == expected
+
+
+def mode_of(path) -> int:
+    """Reads the permission bits of a folder or file.
+
+    Args:
+        path: Folder or file.
+
+    Returns:
+        The bits for owner, group and others.
+    """
+    return path.stat().st_mode & 0o777
+
+
+@pytest.mark.parametrize("platform", ["spotify", "soundcloud"])
+@pytest.mark.parametrize("existing_mode", [None, 0o755, 0o777])
+def test_snapshots_are_for_their_owner_only(root, platform, existing_mode):
+    """Folders are 0700 and files 0600, and a snapshot folder that was open before is closed."""
+    if existing_mode is not None:
+        (root / RUN / platform).mkdir(parents=True)
+        for folder in (root, root / RUN, root / RUN / platform):
+            folder.chmod(existing_mode)
+    path = save(SnapshotStore(root, RUN), platform, "Mix", ["1", "2"])
+    assert [mode_of(folder) for folder in (root, root / RUN, root / RUN / platform)] == [0o700] * 3
+    assert mode_of(path) == 0o600
+    assert read_snapshot(path).track_ids == ["1", "2"]
+
+
+@pytest.mark.parametrize("error", [PermissionError("not permitted"), OSError("no permissions on this disk")])
+def test_a_disk_without_permissions_still_gets_its_snapshot(root, monkeypatch, error):
+    """When the permissions cannot be set, the snapshot is written anyway."""
+
+    def refuse(path, mode):
+        """Stands in for a disk that cannot set permissions.
+
+        Args:
+            path: Folder or file.
+            mode: Permission bits.
+        """
+        raise error
+
+    monkeypatch.setattr(snapshots.Path, "chmod", refuse)
+    path = save(SnapshotStore(root, RUN), "spotify", "Mix", ["1"])
+    assert read_snapshot(path).track_ids == ["1"]
+
+
+@pytest.mark.parametrize(
+    ("track", "expected"),
+    [
+        (SimpleNamespace(id="a", name="Bro\ud800ken", artist="Fine"), {"id": "a", "title": "Bro?ken", "artist": "Fine"}),
+        (SimpleNamespace(id="a", name="Fine", artist="\udfffB"), {"id": "a", "title": "Fine", "artist": "?B"}),
+        (SimpleNamespace(id=7, title="\ud83d", artist="\ude00"), {"id": "7", "title": "?", "artist": "?"}),
+        (SimpleNamespace(id="a\udc80", name="Glue"), {"id": "a?", "title": "Glue"}),
+        (SimpleNamespace(id="a", name="Emoji \U0001f600 stays"), {"id": "a", "title": "Emoji \U0001f600 stays"}),
+    ],
+)
+def test_text_that_cannot_be_encoded_is_replaced_not_fatal(root, track, expected):
+    """Half of a surrogate pair in a title, artist or id becomes a question mark and the snapshot is written."""
+    playlist = SimpleNamespace(id="p", name="Mix")
+    path = SnapshotStore(root, RUN).save("spotify", playlist, [track])
+    assert json.loads(path.read_text(encoding="utf-8"))["tracks"] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("name", "saved_name", "file_name"),
+    [
+        ("Mix \ud800", "Mix ?", "Mix _.json"),
+        ("\udfff", "?", "_.json"),
+        ("Plain", "Plain", "Plain.json"),
+    ],
+)
+def test_a_playlist_name_that_cannot_be_encoded_is_replaced(root, name, saved_name, file_name):
+    """A playlist name holding half of a surrogate pair is saved with a question mark in its place."""
+    path = SnapshotStore(root, RUN).save("spotify", SimpleNamespace(id="p", name=name), [])
+    assert path.name == file_name
+    assert read_snapshot(path).playlist_name == saved_name

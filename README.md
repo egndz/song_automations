@@ -139,9 +139,15 @@ song-automations restore 20261110-143205
 song-automations restore 20261110-143205 --platform spotify --playlist "Discogs - Electronic" --yes
 ```
 
-A restore puts the same tracks back in the same order and recreates a playlist that the sync deleted. It shows what will change and asks before it writes; `--yes` skips the question. It first saves what the playlists hold now as a run of its own, so a restore can be undone the same way. The next sync rebuilds the playlists from your Discogs folders again, so fix the cause first, for example a wrong match in the review tool. With a daily schedule installed that next sync is the one of the following morning, so run `song-automations schedule uninstall` if you need more time.
+A restore puts the same tracks back in the same order and recreates a playlist that the sync deleted. It shows what will change and asks before it writes; `--yes` skips the question. Right before it writes a playlist it reads it once more and saves that state as a run of its own, so a restore can be undone the same way, also when the playlist changed while the question was waiting.
 
-If a snapshot cannot be written, for example because the disk is full, the sync stops with an error and leaves that playlist as it was. An unattended run also tells you so in its macOS notification. Saving costs no extra requests, because the sync reads the track list anyway; only deleting a playlist reads it once more first. The newest 30 runs are kept and older ones are deleted when a sync starts. Set `SNAPSHOT_RUNS_KEPT` to keep more or fewer.
+A playlist is found by the id it had when it was saved, so one you renamed since is restored in place. Only when that id is gone does the restore use a playlist with the saved name, and the plan then says that it is not the playlist that was saved. If two saved playlists would end up in the same playlist, the restore refuses and tells you what to do.
+
+The command exits with 0 only when every playlist is exactly as saved. If it stops partway, it names the playlist it stopped at, says whether that one may be half restored, lists the ones it did not get to and prints the command that undoes what it did. Running the same restore again finishes it.
+
+The next sync rebuilds the playlists from your Discogs folders again, so fix the cause first, for example a wrong match in the review tool. With a daily schedule installed that next sync is the one of the following morning, so run `song-automations schedule uninstall` if you need more time.
+
+If a snapshot cannot be written, for example because the disk is full, the sync stops with an error and leaves that playlist as it was. An unattended run also tells you so in its macOS notification. Saving costs no extra requests, because the sync reads the track list anyway; only deleting a playlist reads it once more first. The newest 30 runs are kept and older ones are deleted when a sync starts. Set `SNAPSHOT_RUNS_KEPT` to keep more or fewer. The snapshot folders and files can be read by your user only.
 
 A few things a restore cannot bring back. A recreated playlist is a new playlist with the old name, so links to the deleted one stay dead. A playlist the run created was empty before, so restoring that run empties it and leaves it in place. On SoundCloud a track that was taken down since then stays out, and the restore says how many did not come back. On Spotify, podcast episodes and local files in a playlist are neither saved nor touched, and tracks that are put back show the day of the restore as the day they were added.
 
