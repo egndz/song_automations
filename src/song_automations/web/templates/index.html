@@ -800,18 +800,21 @@
 
             try {
                 const response = await fetch(`/alternatives/${trackId}`);
-                if (!response.ok) throw new Error('Failed to fetch alternatives');
+                if (!response.ok) {
+                    const problem = await response.json().catch(() => ({}));
+                    throw new Error(problem.detail || `Failed to fetch alternatives (HTTP ${response.status})`);
+                }
 
                 const data = await response.json();
 
                 if (data.alternatives.length === 0) {
-                    grid.innerHTML = '<p style="color: #888;">No alternatives found</p>';
+                    grid.innerHTML = '<p style="color: #888;">No candidate passed the matching checks</p>';
                 } else {
                     grid.innerHTML = data.alternatives.map(alt => `
                         <div class="alternative-card ${alt.is_current ? 'current' : ''}" data-track-id="${alt.track_id}">
                             <div class="alt-header">
                                 <span class="alt-score">${Math.round(alt.score * 100)}%</span>
-                                ${alt.is_verified ? '<span class="alt-verified">Verified</span>' : ''}
+                                <span class="alt-verified">${escapeHtml(alt.tier.replace('_', ' '))}</span>
                             </div>
                             <div class="alt-title">${escapeHtml(alt.title)}</div>
                             <div class="alt-artist">${escapeHtml(alt.artist)}</div>
@@ -832,7 +835,7 @@
                 panel.classList.add('show');
                 button.textContent = 'Hide Alternatives';
             } catch (error) {
-                grid.innerHTML = `<p style="color: #ff4757;">Error: ${error.message}</p>`;
+                grid.innerHTML = `<p style="color: #ff4757;">Error: ${escapeHtml(error.message)}</p>`;
                 panel.classList.add('show');
                 button.textContent = 'Hide Alternatives';
             } finally {
