@@ -9,6 +9,7 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from song_automations import __version__
@@ -30,6 +31,19 @@ from song_automations.reports.audit import DISAGREEMENTS_NAME, run_audit
 from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
 from song_automations.schedule import schedule_app
+from song_automations.snapshots import (
+    RestoreStep,
+    SnapshotError,
+    SnapshotStore,
+    apply_restore,
+    change_lines,
+    list_runs,
+    load_run,
+    plan_restore,
+    restore_hint,
+    select_snapshots,
+    shared_run,
+)
 from song_automations.state.tracker import StateTracker
 from song_automations.sync.engine import OperationType, SyncEngine, SyncResult
 from song_automations.want.sync import sync_want_playlist
@@ -210,8 +224,9 @@ def _friendly_errors(settings: Settings | None = None) -> Iterator[None]:
     """Turns limits and expired logins into a plain message and an exit code.
 
     A used-up search budget is a normal stop and exits with 0. A rate limit or
-    a login that needs the browser exits with 2, and an unattended run also
-    posts a desktop notification about it.
+    a login that needs the browser exits with 2. A playlist snapshot that could
+    not be saved exits with 1, and that playlist was left unchanged. An
+    unattended run also posts a desktop notification about any of the last two.
 
     Args:
         settings: Settings of the run, None when nobody has to be notified.
@@ -236,6 +251,10 @@ def _friendly_errors(settings: Settings | None = None) -> Iterator[None]:
         console.print(f"[red]{limited}[/red]")
         _alert_owner(settings, limited)
         raise typer.Exit(2) from error
+    except SnapshotError as error:
+        console.print(f"[red]{escape(str(error))}[/red]")
+        _alert_owner(settings, error)
+        raise typer.Exit(1) from error
 
 
 def _targets(platform: str) -> list[str]:
@@ -576,19 +595,20 @@ def sync_all(
     console.print("[bold]Syncing to all platforms...[/bold]\n")
 
     exit_code = 0
-    for name, command in (("Spotify", sync_spotify), ("SoundCloud", sync_soundcloud)):
-        console.print(f"\n[bold cyan]--- {name} ---[/bold cyan]")
-        try:
-            command(
-                folders=folders,
-                exclude_wantlist=exclude_wantlist,
-                dry_run=dry_run,
-                min_confidence=None,
-                force_rematch=force_rematch,
-                force_rematch_all=force_rematch_all,
-            )
-        except typer.Exit as stop:
-            exit_code = max(exit_code, stop.exit_code)
+    with shared_run():
+        for name, command in (("Spotify", sync_spotify), ("SoundCloud", sync_soundcloud)):
+            console.print(f"\n[bold cyan]--- {name} ---[/bold cyan]")
+            try:
+                command(
+                    folders=folders,
+                    exclude_wantlist=exclude_wantlist,
+                    dry_run=dry_run,
+                    min_confidence=None,
+                    force_rematch=force_rematch,
+                    force_rematch_all=force_rematch_all,
+                )
+            except typer.Exit as stop:
+                exit_code = max(exit_code, stop.exit_code)
     if exit_code:
         raise typer.Exit(exit_code)
 
@@ -624,6 +644,150 @@ def status() -> None:
         console.print("[yellow]No folder mappings found. Run a sync first.[/yellow]")
     else:
         console.print(table)
+
+
+def _restore_table(run_id: str, steps: list[RestoreStep]) -> Table:
+    """Lays out what a restore would change.
+
+    Args:
+        run_id: Run being restored.
+        steps: One planned restore per playlist.
+
+    Returns:
+        A table with one row per playlist.
+    """
+    table = Table(title=f"Restore of run {run_id}")
+    table.add_column("Platform", style="magenta")
+    table.add_column("Playlist", style="green")
+    table.add_column("Now", justify="right")
+    table.add_column("Saved", justify="right")
+    table.add_column("Put back", justify="right")
+    table.add_column("Take out", justify="right")
+    table.add_column("Action", style="cyan")
+    for step in steps:
+        table.add_row(
+            PLATFORM_LABELS.get(step.snapshot.platform, step.snapshot.platform),
+            escape(step.snapshot.playlist_name),
+            "gone" if step.playlist is None else str(len(step.current)),
+            str(len(step.snapshot.tracks)),
+            str(len(step.put_back)),
+            str(len(step.taken_out)),
+            step.action,
+        )
+    return table
+
+
+@app.command("snapshots")
+def list_snapshots() -> None:
+    """List what was saved before each run changed playlists, newest run first."""
+    runs = list_runs(get_settings().snapshots_dir)
+    if not runs:
+        console.print(
+            "[yellow]No snapshots yet. A sync saves one before it changes a playlist.[/yellow]"
+        )
+        return
+
+    table = Table(title="Playlist snapshots")
+    table.add_column("Run", style="cyan", no_wrap=True)
+    table.add_column("Platform", style="magenta", no_wrap=True)
+    table.add_column("Playlists", justify="right", no_wrap=True)
+    table.add_column("Tracks", justify="right", no_wrap=True)
+    table.add_column("Notes", style="dim")
+    for run in runs:
+        notes = [
+            f"{run.deleted} deleted" if run.deleted else "",
+            "before a restore" if run.before_restore else "",
+            f"{run.unreadable} unreadable" if run.unreadable else "",
+        ]
+        table.add_row(
+            run.run_id,
+            PLATFORM_LABELS.get(run.platform, run.platform),
+            str(run.playlists),
+            str(run.tracks),
+            ", ".join(note for note in notes if note),
+        )
+    console.print(table)
+    console.print("[dim]Put a run back with: song-automations restore RUN_ID[/dim]")
+
+
+@app.command("restore")
+def restore(
+    run_id: Annotated[
+        str,
+        typer.Argument(help="Run to put back, as listed by 'song-automations snapshots'."),
+    ],
+    platform: Annotated[
+        str,
+        typer.Option("--platform", "-p", help="spotify, soundcloud or all."),
+    ] = "all",
+    playlist: Annotated[
+        str | None,
+        typer.Option("--playlist", help="Only the playlist with this name."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", "-n", help="Show what would change without changing it."),
+    ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Restore without asking first."),
+    ] = False,
+) -> None:
+    """Put playlists back exactly as they were before a run changed them."""
+    targets = _targets(platform)
+    settings = _init_settings()
+    try:
+        saved = select_snapshots(load_run(settings.snapshots_dir, run_id), targets, playlist)
+    except SnapshotError as error:
+        console.print(f"[red]Error:[/red] {escape(str(error))}")
+        raise typer.Exit(1) from error
+
+    needed = [name for name in targets if any(snapshot.platform == name for snapshot in saved)]
+    for name in needed:
+        if not getattr(settings, f"{name}_client_id") or not getattr(settings, f"{name}_client_secret"):
+            console.print(
+                f"[red]Error:[/red] {name.upper()}_CLIENT_ID and {name.upper()}_CLIENT_SECRET not set."
+            )
+            raise typer.Exit(1)
+
+    with _friendly_errors():
+        clients = {name: _make_client(settings, name) for name in needed}
+        steps = [plan_restore(snapshot, clients[snapshot.platform]) for snapshot in saved]
+        console.print(_restore_table(run_id, steps))
+        for step in steps:
+            lines = change_lines(step)
+            if lines:
+                label = PLATFORM_LABELS[step.snapshot.platform]
+                console.print(f"[bold]{escape(step.snapshot.playlist_name)}[/bold] on {label}")
+                for line in lines:
+                    console.print(f"  {escape(line)}", style="dim", highlight=False)
+        pending = [step for step in steps if step.changes]
+        if not pending:
+            console.print("[green]Every playlist already matches the snapshot. Nothing to restore.[/green]")
+            return
+        if dry_run:
+            console.print("[yellow]DRY RUN - No changes were made[/yellow]")
+            return
+        if not yes:
+            typer.confirm(f"Put {len(pending)} playlist{'s' if len(pending) != 1 else ''} back?", abort=True)
+
+        store = SnapshotStore(settings.snapshots_dir)
+        try:
+            for step in pending:
+                outcome = apply_restore(step, clients[step.snapshot.platform], store)
+                label = PLATFORM_LABELS[step.snapshot.platform]
+                console.print(
+                    f"[green]Restored[/green] {escape(step.snapshot.playlist_name)} on {label} "
+                    f"({len(step.snapshot.tracks) - len(outcome.lost)} of {len(step.snapshot.tracks)} tracks)"
+                )
+                for problem in outcome.problems:
+                    console.print(f"[yellow]{problem}[/yellow]")
+        finally:
+            if store.hint:
+                console.print(f"[dim]{escape(store.hint)}[/dim]")
+        console.print(
+            "[dim]The next sync rebuilds these playlists from your Discogs folders again.[/dim]"
+        )
 
 
 @report_app.command("matches")
@@ -788,6 +952,10 @@ def _print_sync_result(result, dry_run: bool) -> None:
         console.print(
             "\n[dim]Run 'song-automations report missing' to see unfound tracks.[/dim]"
         )
+
+    snapshot_dir = getattr(result, "snapshot_dir", None)
+    if snapshot_dir and not dry_run:
+        console.print(f"\n[dim]{escape(restore_hint(snapshot_dir))}[/dim]")
 
 
 @app.command("review")

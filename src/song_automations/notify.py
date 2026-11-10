@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from song_automations.errors import RateLimitedError, ReauthRequiredError
+from song_automations.snapshots import SnapshotError
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,11 @@ def attention_message(error: BaseException, now: datetime | None = None) -> str 
         return (
             f"{error.platform} rate limited the app until {until:%Y-%m-%d %H:%M}. "
             "Nothing to do, scheduled runs after that carry on by themselves."
+        )
+    if isinstance(error, SnapshotError):
+        return (
+            "The sync stopped because it could not save a playlist before changing it. "
+            "That playlist was left as it was. The log says why."
         )
     return None
 
