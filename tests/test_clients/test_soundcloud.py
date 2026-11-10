@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import io
 
 import httpx
 import pytest
@@ -281,7 +282,8 @@ class FakeCallbackServer:
     """Local server that never touches the network.
 
     Args:
-        codes: What each handled request brings, None for a request without a code.
+        codes: What each handled request brings: a code, None for a request without
+            one, or a dict with the error a refused approval comes back with.
         clock: Shared fake clock, advanced by a second per handled request.
     """
 
@@ -297,7 +299,11 @@ class FakeCallbackServer:
         self.timeouts.append(self.timeout)
         self._clock[0] += 1
         if self._codes:
-            OAuthCallbackHandler.authorization_code = self._codes.pop(0)
+            answer = self._codes.pop(0)
+            if isinstance(answer, dict):
+                OAuthCallbackHandler.authorization_error = answer["error"]
+            else:
+                OAuthCallbackHandler.authorization_code = answer
 
     def server_close(self):
         """Records that the port was released."""
@@ -395,6 +401,7 @@ class TestSoundCloudLogin:
         monkeypatch.setattr(soundcloud.webbrowser, "open", client.opened.append)
         monkeypatch.setattr(client._http_client, "post", lambda url, data: answer)
         monkeypatch.setattr(OAuthCallbackHandler, "authorization_code", None)
+        monkeypatch.setattr(OAuthCallbackHandler, "authorization_error", None)
         return client
 
     @pytest.mark.parametrize("codes", [["c"], [None, "c"], [None, None, "c"]])
@@ -424,6 +431,62 @@ class TestSoundCloudLogin:
         assert len(client.server.timeouts) == wait
         assert client.server.closed
         assert '"a-old"' in (tmp_path / ".soundcloud_token.json").read_text()
+
+    @pytest.mark.parametrize(
+        ("answers", "reason"),
+        [
+            ([{"error": "access_denied"}], "access_denied"),
+            ([None, {"error": "invalid_scope: no such scope"}], "invalid_scope: no such scope"),
+            ([{"error": "server_error"}, "c"], "server_error"),
+        ],
+    )
+    def test_refused_approval_fails_at_once(self, tmp_path, monkeypatch, answers, reason):
+        """An approval page that comes back with an error ends the login without waiting out the time."""
+        client = self._client(tmp_path, monkeypatch, answers, wait=600, saved="a-old")
+        asked = []
+        monkeypatch.setattr(client._http_client, "post", lambda url, data: asked.append(url))
+        with pytest.raises(LoginFailedError) as caught:
+            client.login()
+        assert isinstance(caught.value, ReauthRequiredError)
+        assert reason in str(caught.value)
+        assert "song-automations login soundcloud" in str(caught.value)
+        assert len(client.server.timeouts) == sum(1 for answer in answers if answer != "c")
+        assert client.server.closed
+        assert asked == []
+        assert OAuthCallbackHandler.authorization_code is None
+        assert OAuthCallbackHandler.authorization_error is None
+        assert '"a-old"' in (tmp_path / ".soundcloud_token.json").read_text()
+
+    @pytest.mark.parametrize(
+        ("path", "status", "code", "error"),
+        [
+            ("/callback?code=abc", 200, "abc", None),
+            ("/callback?error=access_denied", 400, None, "access_denied"),
+            (
+                "/callback?error=access_denied&error_description=The+user+said+no",
+                400,
+                None,
+                "access_denied: The user said no",
+            ),
+            ("/callback?error=server_error&code=abc", 400, None, "server_error"),
+            ("/favicon.ico", 400, None, None),
+            ("/callback", 400, None, None),
+        ],
+    )
+    def test_callback_keeps_the_code_or_the_refusal(self, monkeypatch, path, status, code, error):
+        """The local page notes a code, or the error of a refused approval, and nothing otherwise."""
+        monkeypatch.setattr(OAuthCallbackHandler, "authorization_code", None)
+        monkeypatch.setattr(OAuthCallbackHandler, "authorization_error", None)
+        handler = OAuthCallbackHandler.__new__(OAuthCallbackHandler)
+        handler.path = path
+        handler.requestline = f"GET {path} HTTP/1.1"
+        handler.request_version = "HTTP/1.1"
+        handler.client_address = ("127.0.0.1", 0)
+        handler.wfile = io.BytesIO()
+        handler.do_GET()
+        assert handler.wfile.getvalue().startswith(f"HTTP/1.0 {status} ".encode())
+        assert OAuthCallbackHandler.authorization_code == code
+        assert OAuthCallbackHandler.authorization_error == error
 
     @pytest.mark.parametrize(
         ("saved", "method", "pages_opened"),
