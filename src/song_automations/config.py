@@ -23,6 +23,7 @@ class Settings(BaseSettings):
         data_dir: Directory for storing SQLite database and cache files.
         want_playlist_name: Playlist whose tracks go on the Discogs wantlist.
         playlist_prefix: Prefix for created playlists.
+        soundcloud_gated_tracks: Whether SoundCloud tracks the account cannot play in full may match.
         spotify_search_budget: Spotify searches one run may make.
         min_confidence: Minimum confidence threshold for track matching.
         high_confidence: Threshold for high confidence matches (auto-add).
@@ -82,6 +83,10 @@ class Settings(BaseSettings):
         description="Prefix for created playlists",
     )
 
+    soundcloud_gated_tracks: bool = Field(
+        default=False,
+        description="Also match official SoundCloud uploads the account cannot play in full, such as Go+ releases",
+    )
     spotify_search_budget: int = Field(
         default=400,
         ge=1,

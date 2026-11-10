@@ -216,3 +216,51 @@ class TestParseTrack:
         track = client._parse_track(item)
         assert track.playback_count == 0
         assert track.likes_count == 0
+
+
+class TestSearchAccess:
+    """Tests for which tracks searches ask SoundCloud for."""
+
+    @pytest.fixture
+    def client(self, settings, monkeypatch):
+        """Create a client whose requests are recorded instead of sent.
+
+        Args:
+            settings: Test settings.
+            monkeypatch: Pytest patcher.
+
+        Returns:
+            The client, with the requests in client.sent and the next body in client.body.
+        """
+        client = SoundCloudClient(settings)
+        client.sent = []
+        client.body = []
+
+        def fake_get(url, params=None):
+            """Records one request.
+
+            Args:
+                url: Target URL.
+                params: Query parameters.
+
+            Returns:
+                The prepared body.
+            """
+            client.sent.append((url, params))
+            return client.body
+
+        monkeypatch.setattr(client, "_get_json", fake_get)
+        return client
+
+    @pytest.mark.parametrize("search", ["tracks", "sets", "account"])
+    def test_searches_ask_for_every_access_level(self, client, search):
+        """Label releases are only returned when preview and blocked tracks are asked for too."""
+        if search == "tracks":
+            client.search_raw("Bicep Glue")
+        elif search == "sets":
+            client.search_playlists_raw("Bicep Isles")
+        else:
+            client.body = [{"username": "Bicep", "track_count": 3, "followers_count": 9, "urn": "soundcloud:users:1"}]
+            client.account_tracks_raw("Bicep")
+        asked = [params["access"] for _, params in client.sent if params and "access" in params]
+        assert asked == ["playable,preview,blocked"]

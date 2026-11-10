@@ -4,7 +4,7 @@ import collections
 import csv
 from pathlib import Path
 
-from song_automations.state.tracker import StateTracker
+from song_automations.state.tracker import GATED, StateTracker
 
 FIELDS = [
     "destination",
@@ -42,7 +42,10 @@ def write_match_report(
         writer = csv.DictWriter(handle, fieldnames=FIELDS)
         writer.writeheader()
         for row in state.get_matches_for_report(destination):
-            status = (row["match_tier"] or "legacy") if row["destination_track_id"] else "missing"
+            if row["destination_track_id"]:
+                status = row["match_tier"] or "legacy"
+            else:
+                status = GATED if row["match_tier"] == GATED else "missing"
             summary.setdefault(row["destination"], collections.Counter())[status] += 1
             writer.writerow(
                 {

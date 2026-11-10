@@ -8,7 +8,7 @@ version agrees: the exact mix first, then the original, then any other mix.
 
 import re
 import unicodedata
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -20,6 +20,9 @@ VERSION_RATIO = 85
 EXACT_LENGTH_BELOW = 5
 DURATION_TOLERANCE_MS = 20_000
 PREVIEW_MAX_MS = 60_000
+PREVIEW_CLIP_MS = 30_000
+ISRC_KIND = "isrc"
+PLAYABLE = "playable"
 PREVIEW_SOURCE_FRACTION = 0.5
 LONG_MIX_MIN_MS = 1_500_000
 LONG_MIX_SOURCE_FACTOR = 2.5
@@ -61,8 +64,8 @@ REJECT_MARKERS = re.compile(
     r"nightcore|sped up|speed up|slowed|8d audio|type beat|reaction|tutorial|"
     r"preview|snippet|teaser|clip|sample pack|mashup|mash up|bootleg|vs|"
     r"acapella|a cappella|instrumental|piano version|acoustic|"
-    r"jools holland|kexp|tiny desk|peel session|bbc session|maida vale|live lounge|audiotree|"
-    r"colors show|live at|live from|live on|in session|unplugged|ao vivo|en vivo|en directo|en concierto)\b"
+    r"jools holland|kexp|tiny desk|sessions?|maida vale|live lounge|audiotree|"
+    r"colors show|live at|live from|live on|unplugged|ao vivo|en vivo|en directo|en concierto)\b"
 )
 SOFT_MARKERS = re.compile(
     r"\b(dj set|live set|mixed by|mixtape|podcast|radio show|episode|boiler room|essential mix|"
@@ -102,7 +105,7 @@ class SourceTrack:
     """A Discogs track prepared for matching.
 
     Attributes:
-        artists: Credited artist names plus any known aliases.
+        artists: Credited artist names.
         title: Raw track title.
         duration_ms: Track length if Discogs knows it.
         release_title: Title of the release the track is on.
@@ -111,6 +114,13 @@ class SourceTrack:
         fan_uploads: Whether uploads by strangers may match. Off when Spotify
             already carries the track, since fan uploads of released music
             turned out to be covers or tributes about as often as the record.
+        aliases: Other names of the artists. They count when a platform names
+            the artist of a track, but an account that merely has such a name
+            is not trusted, since short aliases are common account names.
+        isrcs: Recording codes of this exact version with the length the
+            catalogue gives for each, taken from a catalogue that lists it. A
+            candidate carrying one of them is the same recording, whoever
+            uploaded it.
     """
 
     artists: tuple[str, ...]
@@ -120,6 +130,8 @@ class SourceTrack:
     labels: tuple[str, ...] = ()
     remixers: tuple[str, ...] = ()
     fan_uploads: bool = True
+    aliases: tuple[str, ...] = ()
+    isrcs: Mapping[str, int | None] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -149,6 +161,8 @@ class Candidate:
         album: Album name if the platform has one.
         uploader: Uploading account, SoundCloud only.
         plays: Play count used only as the last tiebreak.
+        isrc: Recording code the platform lists, empty when it lists none.
+        access: SoundCloud access level: playable, preview or blocked.
     """
 
     id: str
@@ -158,6 +172,8 @@ class Candidate:
     album: str = ""
     uploader: str = ""
     plays: int = 0
+    isrc: str = ""
+    access: str = PLAYABLE
 
 
 @dataclass(frozen=True)
@@ -207,6 +223,18 @@ class Decision:
     match: Match | None = None
     alternatives: list[Match] = field(default_factory=list)
     rejections: list[Rejection] = field(default_factory=list)
+
+
+def normalize_isrc(text: str | None) -> str:
+    """Brings a recording code to one spelling.
+
+    Args:
+        text: Code as a platform writes it, with or without dashes.
+
+    Returns:
+        Upper case code without separators, empty when there is none.
+    """
+    return re.sub(r"[^A-Z0-9]", "", (text or "").upper())
 
 
 def clean(text: str) -> str:
@@ -473,6 +501,8 @@ def _confidence(tier: Tier, reading: Reading, delta: int | None, same_release: b
     Returns:
         Value between 0 and 1.
     """
+    if reading.kind == ISRC_KIND:
+        return 1.0
     base = {Tier.EXACT: 0.85, Tier.ORIGINAL: 0.7, Tier.OTHER_MIX: 0.55}[tier]
     if reading.kind in {"label", "loose"}:
         base -= 0.1
@@ -529,6 +559,71 @@ def _fan_upload_unverified(source: SourceTrack, candidate: Candidate) -> bool:
     return True
 
 
+def _length_is_hidden(source: SourceTrack, candidate: Candidate) -> bool:
+    """Checks whether a gated track hides the length that would confirm its version.
+
+    SoundCloud reports the 30 second clip of a subscriber-only track, not its
+    length. When Discogs gives a length that cannot be compared, a studio cut
+    cannot be told from the live take on the record, so the match is kept but
+    counts as another version.
+
+    Args:
+        source: Source track.
+        candidate: Candidate track.
+
+    Returns:
+        True when the record has a length and the gated candidate shows none.
+    """
+    return bool(source.duration_ms) and not candidate.duration_ms and candidate.access != PLAYABLE
+
+
+def _is_cut(length: int | None, *full_lengths: int | None) -> bool:
+    """Checks whether an upload is too far from the length of the recording.
+
+    Labels post clips of a release under the code of the full track, so the
+    code alone does not show that the whole recording is there.
+
+    Args:
+        length: Length of the upload, None when unknown.
+        full_lengths: Lengths Discogs and the catalogue give, None when unknown.
+
+    Returns:
+        True when a known length differs from the upload by more than the tolerance.
+    """
+    if not length:
+        return False
+    return any(full and abs(full - length) > DURATION_TOLERANCE_MS for full in full_lengths)
+
+
+def _same_recording(source: SourceTrack, candidate: Candidate) -> Match:
+    """Accepts a candidate that carries a recording code of the source.
+
+    The code names one recording, so no reading of the title or the account
+    is needed, and a cover or a live take never shares it.
+
+    Args:
+        source: Source track.
+        candidate: Candidate with a matching code.
+
+    Returns:
+        An exact match.
+    """
+    known = candidate.readings[0] if candidate.readings else Reading((), candidate.raw_title)
+    reading = Reading(known.artists, known.title, ISRC_KIND)
+    delta = (
+        abs(source.duration_ms - candidate.duration_ms)
+        if source.duration_ms and candidate.duration_ms
+        else None
+    )
+    return Match(
+        candidate=candidate,
+        tier=Tier.EXACT,
+        reading=reading,
+        duration_delta_ms=delta,
+        confidence=_confidence(Tier.EXACT, reading, delta, False),
+    )
+
+
 def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
     """Applies the gates to one candidate.
 
@@ -540,6 +635,10 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         A Match when every gate passes, otherwise a Rejection naming the first
         failed gate.
     """
+    if candidate.isrc and candidate.isrc in source.isrcs:
+        if _is_cut(candidate.duration_ms, source.duration_ms, source.isrcs[candidate.isrc]):
+            return Rejection(candidate, "isrc_length")
+        return _same_recording(source, candidate)
     marker = _rejected_marker(source, candidate)
     if marker:
         return Rejection(candidate, f"marker:{marker}")
@@ -559,7 +658,7 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         elif reading.kind == "uploader":
             if not _account_is(source.artists, candidate.uploader):
                 continue
-        elif not artists_agree(source.artists, reading.artists):
+        elif not artists_agree((*source.artists, *source.aliases), reading.artists):
             continue
         tier = classify_tier(source_versions, reading_versions)
         if best is None or tier > best[0]:
@@ -568,7 +667,7 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
         return Rejection(candidate, reason)
     tier, reading = best
     duration_reason = _duration_rejection(source.duration_ms, candidate.duration_ms, tier)
-    if duration_reason == "duration_mismatch":
+    if duration_reason == "duration_mismatch" or _length_is_hidden(source, candidate):
         tier = Tier.OTHER_MIX
     elif duration_reason:
         return Rejection(candidate, duration_reason)
@@ -607,6 +706,8 @@ def _rank(match: Match) -> tuple:
     delta = match.duration_delta_ms if match.duration_delta_ms is not None else 10**9
     return (
         -int(match.tier),
+        match.reading.kind != ISRC_KIND,
+        match.candidate.access != PLAYABLE,
         not match.on_same_release,
         match.reading.kind in {"label", "loose"},
         delta // 5000,
@@ -689,6 +790,7 @@ def spotify_candidate(item: dict, album_name: str | None = None) -> Candidate:
         readings=(Reading(artists, name),),
         duration_ms=item.get("duration_ms"),
         album=album or "",
+        isrc=normalize_isrc((item.get("external_ids") or {}).get("isrc")),
     )
 
 
@@ -740,12 +842,18 @@ def soundcloud_candidate(item: dict) -> Candidate:
     """
     uploader = (item.get("user") or {}).get("username") or ""
     title = item.get("title") or ""
+    access = item.get("access") or PLAYABLE
+    duration = item.get("duration")
+    if access == "preview" and duration == PREVIEW_CLIP_MS:
+        duration = None
     return Candidate(
         id=str(item.get("id")),
         raw_title=title,
         readings=soundcloud_readings(title, uploader, item.get("metadata_artist") or ""),
-        duration_ms=item.get("duration"),
+        duration_ms=duration,
         album=item.get("release") or "",
         uploader=uploader,
         plays=item.get("playback_count") or 0,
+        isrc=normalize_isrc(item.get("isrc")),
+        access=access,
     )

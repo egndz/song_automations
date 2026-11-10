@@ -3,7 +3,7 @@
 import re
 import traceback
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Protocol
@@ -13,15 +13,17 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from song_automations.clients.discogs import DiscogsClient, Folder, Release, Track
 from song_automations.config import Settings
+from song_automations.matching.isrc import IsrcFinder
 from song_automations.matching.matcher import Match, SourceTrack, Tier
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
     SpotifySearcher,
     resolve_release,
 )
-from song_automations.state.tracker import Destination, StateTracker
+from song_automations.state.tracker import GATED, Destination, StateTracker
 
 MISSING_RETRY_DAYS = 7
+EXACT = Tier.EXACT.name.lower()
 
 
 def _duration_ms(text: str) -> int | None:
@@ -93,6 +95,7 @@ class SyncResult:
         tracks_removed: Number of tracks removed.
         tracks_missing: Number of tracks not found.
         tracks_flagged: Number of tracks flagged for review.
+        tracks_gated: Missing tracks that exist only as uploads the account cannot play in full.
     """
 
     operations: list[SyncOperation] = field(default_factory=list)
@@ -102,6 +105,7 @@ class SyncResult:
     tracks_removed: int = 0
     tracks_missing: int = 0
     tracks_flagged: int = 0
+    tracks_gated: int = 0
 
 
 class PlaylistClient(Protocol):
@@ -132,6 +136,7 @@ class SyncEngine:
         discogs_client: Discogs API client.
         state_tracker: State tracker for caching.
         console: Rich console for output.
+        isrc_finder: Looks up recording codes for SoundCloud matching, optional.
     """
 
     def __init__(
@@ -140,11 +145,13 @@ class SyncEngine:
         discogs_client: DiscogsClient,
         state_tracker: StateTracker,
         console: Console | None = None,
+        isrc_finder: IsrcFinder | None = None,
     ) -> None:
         self._settings = settings
         self._discogs = discogs_client
         self._state = state_tracker
         self._console = console or Console()
+        self._isrc_finder = isrc_finder
 
     def sync_to_spotify(
         self,
@@ -269,6 +276,7 @@ class SyncEngine:
                     result.tracks_removed += folder_result.tracks_removed
                     result.tracks_missing += folder_result.tracks_missing
                     result.tracks_flagged += folder_result.tracks_flagged
+                    result.tracks_gated += folder_result.tracks_gated
 
                 progress.update(task, description="Checking for deleted folders...")
                 deleted_result = self._cleanup_deleted_folders(
@@ -425,7 +433,7 @@ class SyncEngine:
             ):
                 if track_id:
                     desired[track_id] = None
-                    flagged = tier != Tier.EXACT.name.lower()
+                    flagged = tier != EXACT
                     result.tracks_flagged += flagged
                     result.operations.append(
                         SyncOperation(
@@ -440,6 +448,7 @@ class SyncEngine:
                     )
                 else:
                     result.tracks_missing += 1
+                    result.tracks_gated += tier == GATED
                     self._state.save_missing_track(
                         discogs_release_id=release.id,
                         discogs_folder_id=folder.id,
@@ -470,7 +479,9 @@ class SyncEngine:
         """
         if destination == "spotify":
             return SpotifySearcher(playlist_client, self._state)
-        return SoundCloudSearcher(playlist_client, self._state)
+        return SoundCloudSearcher(
+            playlist_client, self._state, allow_gated=self._settings.soundcloud_gated_tracks
+        )
 
     def _match_release(
         self,
@@ -497,11 +508,11 @@ class SyncEngine:
         known = {
             position: row
             for position, row in stored.items()
-            if row is not None and self._is_fresh(row)
+            if row is not None and self._is_fresh(row, destination)
         }
         pending = [track for track in tracks if track.position not in known]
         outcomes: dict[str, tuple[str | None, float, str | None]] = {
-            position: (row.destination_track_id, row.match_confidence, row.match_tier or Tier.EXACT.name.lower())
+            position: (row.destination_track_id, row.match_confidence, row.match_tier or EXACT)
             for position, row in known.items()
         }
         if pending:
@@ -510,40 +521,61 @@ class SyncEngine:
                 self._state.get_rejected_ids(release.id, track.position, destination) | taken
                 for track in pending
             ]
-            matches = resolve_release(
-                searcher,
-                [self._to_source(track, release) for track in pending],
-                [_first_artist(track) for track in pending],
-                pending[0].release_artist,
-                release.title,
-                pending[0].labels,
-                excluded=excluded,
-                alias_lookup=lambda index: self._aliases(pending[index]),
-            )
-            for track, match in zip(pending, matches, strict=True):
-                self._save_decision(release, track, match, destination)
+            sources = [self._to_source(track, release, destination) for track in pending]
+
+            def resolve(using, indexes: list[int]) -> list[Match | None]:
+                """Matches some of the pending tracks.
+
+                Args:
+                    using: Searcher to use.
+                    indexes: Positions in the pending list.
+
+                Returns:
+                    One entry per index.
+                """
+                return resolve_release(
+                    using,
+                    [sources[i] for i in indexes],
+                    [_first_artist(pending[i]) for i in indexes],
+                    pending[0].release_artist,
+                    release.title,
+                    pending[0].labels,
+                    excluded=[excluded[i] for i in indexes],
+                    alias_lookup=lambda index: self._aliases(pending[indexes[index]]),
+                )
+
+            matches = resolve(searcher, list(range(len(pending))))
+            unmatched = [i for i, match in enumerate(matches) if match is None]
+            gated: set[int] = set()
+            if unmatched and hasattr(searcher, "including_gated") and not self._settings.soundcloud_gated_tracks:
+                found = resolve(searcher.including_gated(), unmatched)
+                gated = {i for i, match in zip(unmatched, found, strict=True) if match}
+            for index, (track, match) in enumerate(zip(pending, matches, strict=True)):
+                tier = match.tier.name.lower() if match else GATED if index in gated else None
+                self._save_decision(release, track, match, destination, tier)
                 outcomes[track.position] = (
-                    (match.candidate.id, match.confidence, match.tier.name.lower())
-                    if match
-                    else (None, 0.0, None)
+                    (match.candidate.id, match.confidence, tier) if match else (None, 0.0, tier)
                 )
         return [(track, *outcomes[track.position]) for track in tracks]
 
-    @staticmethod
-    def _is_fresh(row) -> bool:
+    def _is_fresh(self, row, destination: Destination) -> bool:
         """Decides whether a stored decision can be reused.
 
         A found track or a reviewed one is kept. A track that was not found is
-        searched again after a week, because catalogues change.
+        searched again after a week, because catalogues change, and at once
+        when it was only missing for being gated and gated tracks are now allowed.
 
         Args:
             row: Stored decision.
+            destination: Target platform.
 
         Returns:
             True when the decision can be reused.
         """
         if row.destination_track_id:
             return True
+        if row.match_tier == GATED and destination == "soundcloud" and self._settings.soundcloud_gated_tracks:
+            return False
         age = datetime.now() - row.searched_at
         return age < timedelta(days=MISSING_RETRY_DAYS)
 
@@ -561,28 +593,35 @@ class SyncEngine:
             names += self._discogs.get_artist_names(artist_id)
         return tuple(dict.fromkeys(names))
 
-    def _to_source(self, track: Track, release: Release) -> SourceTrack:
+    def _to_source(self, track: Track, release: Release, destination: Destination) -> SourceTrack:
         """Prepares a Discogs track for matching.
 
-        Fan uploads are allowed only for tracks Spotify does not carry, so a
-        Spotify sync before a SoundCloud sync keeps covers out.
+        On SoundCloud the recording codes of the track are looked up first, so
+        the official upload is recognised whatever its account is called. Fan
+        uploads are allowed only for tracks no catalogue carries, which keeps
+        covers out.
 
         Args:
             track: Discogs track.
             release: Parent release.
+            destination: Target platform.
 
         Returns:
             The source track.
         """
-        return SourceTrack(
+        source = SourceTrack(
             artists=track.artist_names or (track.artist,),
             title=track.title,
             duration_ms=_duration_ms(track.duration),
             release_title=release.title,
             labels=track.labels,
             remixers=track.remixers,
-            fan_uploads=not self._state.has_exact_spotify_match(release.id, track.position),
         )
+        isrcs: dict[str, int | None] = {}
+        if destination == "soundcloud" and self._isrc_finder is not None:
+            isrcs = self._isrc_finder.find(source, _first_artist(track))
+        released = bool(isrcs) or self._state.has_exact_spotify_match(release.id, track.position)
+        return replace(source, isrcs=isrcs, fan_uploads=not released)
 
     def _save_decision(
         self,
@@ -590,6 +629,7 @@ class SyncEngine:
         track: Track,
         match: Match | None,
         destination: Destination,
+        tier: str | None,
     ) -> None:
         """Stores a decision with its evidence.
 
@@ -598,6 +638,8 @@ class SyncEngine:
             track: Discogs track.
             match: Chosen match, or None.
             destination: Target platform.
+            tier: Version tier of the match, or gated for a missing track that
+                exists only as an upload the account cannot play in full.
         """
         self._state.save_matched_track(
             discogs_release_id=release.id,
@@ -607,7 +649,7 @@ class SyncEngine:
             destination=destination,
             destination_track_id=match.candidate.id if match else None,
             match_confidence=match.confidence if match else 0.0,
-            match_tier=match.tier.name.lower() if match else None,
+            match_tier=tier,
             matched_title=match.candidate.raw_title if match else None,
             matched_uploader=match.candidate.uploader if match else None,
             match_reading=match.reading.kind if match else None,

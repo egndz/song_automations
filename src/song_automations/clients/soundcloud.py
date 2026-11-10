@@ -17,6 +17,8 @@ from song_automations.clients.http import DEFAULT_TIMEOUT, RETRYABLE_EXCEPTIONS,
 from song_automations.config import Settings
 from song_automations.matching.matcher import clean
 
+EVERY_ACCESS = "playable,preview,blocked"
+
 
 @dataclass
 class SoundCloudTrack:
@@ -398,7 +400,11 @@ class SoundCloudClient:
         return body if isinstance(body, list) else (body or {}).get("collection", [])
 
     def search_raw(self, query: str, limit: int = 50) -> list[dict]:
-        """Searches playable tracks and returns the raw items.
+        """Searches tracks and returns the raw items.
+
+        Every access level is asked for. SoundCloud marks each track with what
+        the logged-in account may do with it: playable in full, a preview clip
+        (releases that need Go+) or blocked, and the matcher decides from that.
 
         Args:
             query: Search query.
@@ -407,7 +413,7 @@ class SoundCloudClient:
         Returns:
             Raw tracks.
         """
-        params = {"q": query, "limit": limit, "access": "playable"}
+        params = {"q": query, "limit": limit, "access": EVERY_ACCESS}
         return self._rows(self._get_json(f"{self.API_BASE}/tracks", params))
 
     def search_playlists_raw(self, query: str, limit: int = 20) -> list[dict]:
@@ -420,7 +426,7 @@ class SoundCloudClient:
         Returns:
             Raw sets.
         """
-        params = {"q": query, "limit": limit, "show_tracks": "true", "access": "playable"}
+        params = {"q": query, "limit": limit, "show_tracks": "true", "access": EVERY_ACCESS}
         return self._rows(self._get_json(f"{self.API_BASE}/playlists", params))
 
     def account_tracks_raw(self, name: str, max_accounts: int = 2, max_pages: int = 3) -> list[dict]:
@@ -444,7 +450,7 @@ class SoundCloudClient:
         tracks: list[dict] = []
         for user in users[:max_accounts]:
             url = f"{self.API_BASE}/users/{user.get('urn') or user['id']}/tracks"
-            params = {"limit": 200, "access": "playable", "linked_partitioning": "true"}
+            params = {"limit": 200, "access": EVERY_ACCESS, "linked_partitioning": "true"}
             for _ in range(max_pages):
                 body = self._get_json(url, params)
                 tracks += self._rows(body)

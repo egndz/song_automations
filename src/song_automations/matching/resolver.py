@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Protocol
 
 from song_automations.matching.matcher import (
+    PLAYABLE,
     Candidate,
     Decision,
     Match,
@@ -20,6 +21,7 @@ from song_automations.matching.matcher import (
 )
 
 MAX_ALIAS_SEARCHES = 2
+EVERY_ACCESS_KEY = "@all"
 MAX_ALBUMS = 2
 MIN_BARE_TITLE_QUERY = 8
 PLAYLIST_LIMIT = 20
@@ -155,18 +157,45 @@ class SpotifySearcher:
 class SoundCloudSearcher:
     """Searches SoundCloud through EP sets, accounts and plain search.
 
+    Searches return every track, and tracks the account cannot play in full
+    (Go+ releases heard as a clip, or blocked ones) are dropped here unless
+    they are allowed, so both views share the same stored responses.
+
     Args:
         client: Client exposing search_raw, search_playlists_raw and account_tracks_raw.
         cache: Response cache.
+        allow_gated: Whether tracks the account cannot play in full may match.
     """
 
     platform = "soundcloud"
     alias_searches = MAX_ALIAS_SEARCHES
 
-    def __init__(self, client, cache: SearchCache) -> None:
+    def __init__(self, client, cache: SearchCache, allow_gated: bool = False) -> None:
         self._client = client
         self._cache = cache
+        self._allow_gated = allow_gated
         self._accounts: dict[str, list[Candidate]] = {}
+
+    def including_gated(self) -> "SoundCloudSearcher":
+        """Builds the view of this searcher that also offers gated tracks.
+
+        Returns:
+            A searcher over the same client and stored responses.
+        """
+        return SoundCloudSearcher(self._client, self._cache, allow_gated=True)
+
+    def _usable(self, candidates: list[Candidate]) -> list[Candidate]:
+        """Drops the tracks the account cannot play in full, unless allowed.
+
+        Args:
+            candidates: Candidates of any access level.
+
+        Returns:
+            Candidates that may match.
+        """
+        if self._allow_gated:
+            return candidates
+        return [candidate for candidate in candidates if candidate.access == PLAYABLE]
 
     def _cached(self, key: str, fetch: Callable[[], list | dict]) -> list | dict:
         """Returns a cached response or fetches and stores it.
@@ -178,6 +207,7 @@ class SoundCloudSearcher:
         Returns:
             Raw response.
         """
+        key = f"{key}{EVERY_ACCESS_KEY}"
         stored = self._cache.get_search_cache(self.platform, key)
         if stored is not None:
             return stored
@@ -198,7 +228,7 @@ class SoundCloudSearcher:
         if key not in self._accounts:
             items = self._cached(f"account:{key}", lambda: self._client.account_tracks_raw(name))
             self._accounts[key] = [soundcloud_candidate(item) for item in items]
-        return self._accounts[key]
+        return self._usable(self._accounts[key])
 
     def release_candidates(
         self, artist: str, release_title: str, labels: Sequence[str]
@@ -222,6 +252,7 @@ class SoundCloudSearcher:
                 candidates += [
                     soundcloud_candidate(item) for item in playlist.get("tracks") or [] if item.get("title")
                 ]
+        candidates = self._usable(candidates)
         for name in ([artist] if artist else []) + list(labels[:1]):
             candidates += self._account(name)
         return candidates
@@ -249,7 +280,7 @@ class SoundCloudSearcher:
             Candidates.
         """
         items = self._cached(f"track:{query}", lambda: self._client.search_raw(query))
-        return [soundcloud_candidate(item) for item in items]
+        return self._usable([soundcloud_candidate(item) for item in items])
 
 
 def _is_settled(decision: Decision) -> bool:
@@ -305,7 +336,7 @@ def resolve_release(
         if decision.match is None and alias_lookup is not None:
             names = alias_lookup(index)
             if names:
-                source = replace(source, artists=tuple(source.artists) + tuple(names))
+                source = replace(source, aliases=tuple(names))
                 decision = decide(source, seen)
                 if decision.match is None:
                     for name in names[: searcher.alias_searches]:

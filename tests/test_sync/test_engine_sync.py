@@ -365,3 +365,148 @@ def test_wantlist_constant_is_protected_from_cleanup(state):
     spotify = FakeSpotify({"Discogs - Electro": [], "W": ["kept"]}, {QUERY: [item("right", "Glue")]})
     run(state, discogs, spotify)
     assert spotify.playlists["W"] == ["kept"]
+
+
+class FakeFinder:
+    """Recording code lookup stand-in.
+
+    Args:
+        codes: Codes every track gets.
+    """
+
+    def __init__(self, codes=()) -> None:
+        self.codes = dict.fromkeys(codes)
+        self.asked = []
+
+    def find(self, source, artist):
+        """Looks up a track.
+
+        Args:
+            source: Source track.
+            artist: Artist searched for.
+
+        Returns:
+            The codes.
+        """
+        self.asked.append((artist, source.title))
+        return self.codes
+
+
+@pytest.mark.parametrize(
+    ("destination", "codes", "on_spotify", "isrcs", "fan_uploads", "lookups"),
+    [
+        ("soundcloud", {"GBCFB1700231"}, False, {"GBCFB1700231"}, False, 1),
+        ("soundcloud", set(), False, set(), True, 1),
+        ("soundcloud", set(), True, set(), False, 1),
+        ("spotify", {"GBCFB1700231"}, False, set(), True, 0),
+    ],
+)
+def test_released_tracks_refuse_fan_uploads(state, destination, codes, on_spotify, isrcs, fan_uploads, lookups):
+    """A track that a catalogue or Spotify carries takes only verified uploads, and only SoundCloud looks codes up."""
+    track = discogs_track()
+    if on_spotify:
+        state.save_matched_track(1, "A1", "Bicep", "Glue", "spotify", "sp1", 0.9, match_tier="exact")
+    finder = FakeFinder(codes)
+    engine = SyncEngine(Settings(_env_file=None), FakeDiscogs({}), state, Console(quiet=True), isrc_finder=finder)
+    source = engine._to_source(track, Release(1, "Release", "Bicep", 2017, 1, "Folder"), destination)
+    assert (set(source.isrcs), source.fan_uploads, len(finder.asked)) == (set(isrcs), fan_uploads, lookups)
+
+
+class FakeSoundCloud(FakeSpotify):
+    """SoundCloud stand-in holding playlists in memory.
+
+    Args:
+        uploads: Raw tracks every track search returns.
+    """
+
+    def __init__(self, uploads) -> None:
+        super().__init__({}, {})
+        self.uploads = list(uploads)
+
+    def search_raw(self, query, kind="track"):
+        """Searches tracks.
+
+        Args:
+            query: Query.
+            kind: Unused.
+
+        Returns:
+            The uploads.
+        """
+        return self.uploads
+
+    def search_playlists_raw(self, query):
+        """Searches sets.
+
+        Args:
+            query: Query.
+
+        Returns:
+            Nothing.
+        """
+        return []
+
+    def account_tracks_raw(self, name):
+        """Lists an account.
+
+        Args:
+            name: Account name.
+
+        Returns:
+            Nothing.
+        """
+        return []
+
+    def set_playlist_tracks(self, playlist_id, track_ids):
+        """Replaces the tracks of a playlist.
+
+        Args:
+            playlist_id: Id.
+            track_ids: Track ids.
+        """
+        self.playlists[playlist_id] = [str(t) for t in track_ids]
+
+
+def run_soundcloud(state, soundcloud, gated: bool):
+    """Runs a SoundCloud sync of one folder holding one track.
+
+    Args:
+        state: Tracker.
+        soundcloud: SoundCloud fake.
+        gated: Whether gated tracks may match.
+
+    Returns:
+        The result.
+    """
+    settings = Settings(_env_file=None, soundcloud_gated_tracks=gated)
+    engine = SyncEngine(settings, FakeDiscogs({"House": [discogs_track()]}), state, Console(quiet=True))
+    return engine.sync_to_soundcloud(soundcloud, include_wantlist=False)
+
+
+@pytest.mark.parametrize(
+    ("access", "gated", "playlist", "missing", "counted"),
+    [
+        ("playable", False, ["7"], 0, 0),
+        ("preview", False, [], 1, 1),
+        ("blocked", False, [], 1, 1),
+        ("preview", True, ["7"], 0, 0),
+    ],
+)
+def test_gated_upload_is_counted_not_added_unless_allowed(state, access, gated, playlist, missing, counted):
+    """An official upload the account cannot play in full is reported as such, and added only on request."""
+    upload = {"id": 7, "title": "Glue", "user": {"username": "Bicep"}, "duration": 300_000, "access": access}
+    soundcloud = FakeSoundCloud([upload])
+    result = run_soundcloud(state, soundcloud, gated)
+    assert soundcloud.playlists.get("Discogs - House", []) == playlist
+    assert (result.tracks_missing, result.tracks_gated) == (missing, counted)
+
+
+@pytest.mark.parametrize(("allowed_later", "playlist"), [(True, ["7"]), (False, [])])
+def test_allowing_gated_tracks_takes_effect_on_the_next_run(state, allowed_later, playlist):
+    """A track stored as gated is looked at again at once when the setting is switched on."""
+    upload = {"id": 7, "title": "Glue", "user": {"username": "Bicep"}, "duration": 300_000, "access": "preview"}
+    soundcloud = FakeSoundCloud([upload])
+    run_soundcloud(state, soundcloud, False)
+    result = run_soundcloud(state, soundcloud, allowed_later)
+    assert soundcloud.playlists.get("Discogs - House", []) == playlist
+    assert result.tracks_gated == (0 if allowed_later else 1)

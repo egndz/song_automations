@@ -277,3 +277,140 @@ def test_decide_is_independent_of_candidate_order():
 def test_reading_is_hashable():
     """Readings can be deduplicated."""
     assert len({Reading(("a",), "b"), Reading(("a",), "b")}) == 1
+
+
+def catalogue_upload(title="Katmandu (Remastered 2020)", uploader="YusufCatStevens", isrc="GBUM71905959", access="blocked", ms=203_000, id="x") -> Candidate:
+    """Builds a SoundCloud track the way a label delivers it.
+
+    Args:
+        title: Upload title.
+        uploader: Account name.
+        isrc: Recording code.
+        access: Access level.
+        ms: Duration.
+        id: Track id.
+
+    Returns:
+        The candidate.
+    """
+    return soundcloud_candidate(
+        {"id": id, "title": title, "user": {"username": uploader}, "duration": ms, "isrc": isrc, "access": access}
+    )
+
+
+@pytest.mark.parametrize(
+    ("known", "candidate", "accepted"),
+    [
+        ({"GBUM71905959"}, catalogue_upload(), True),
+        ({"GBUM71905959"}, catalogue_upload(isrc="gb-um7-19-05959"), True),
+        ({"GBUM71905959"}, catalogue_upload(title="Katmandu (Live at the BBC)"), True),
+        ({"GBUM71905959"}, catalogue_upload(isrc=""), False),
+        ({"GBUM71905959"}, catalogue_upload(title="Katmandu (Made Popular By Cat Stevens)", uploader="Party Tyme Karaoke", isrc="USSYS1103776"), False),
+        (set(), catalogue_upload(), False),
+    ],
+)
+def test_same_recording_code_is_trusted_whatever_the_account(known, candidate, accepted):
+    """An upload carrying the code of the record is the record; anything else still needs a trusted account."""
+    source = SourceTrack(("Cat Stevens",), "Katmandu", fan_uploads=False, isrcs=dict.fromkeys(known))
+    outcome = evaluate(source, candidate)
+    assert isinstance(outcome, Match) is accepted
+    if accepted:
+        assert (outcome.tier, outcome.reading.kind, outcome.confidence) == (Tier.EXACT, "isrc", 1.0)
+
+
+@pytest.mark.parametrize(
+    ("candidates", "winner"),
+    [
+        ([catalogue_upload(title="Glue", uploader="Bicep", isrc="", access="playable", id="own"), catalogue_upload(title="Glue", uploader="BICEP MUSIC", isrc="GBCFB1700231", access="preview", id="code")], "code"),
+        ([catalogue_upload(title="Glue", uploader="Bicep", isrc="", access="preview", id="gated"), catalogue_upload(title="Glue", uploader="Bicep", isrc="", access="playable", id="free")], "free"),
+        ([catalogue_upload(title="Glue", uploader="Bicep", isrc="GBCFB1700231", access="blocked", id="gated"), catalogue_upload(title="Glue", uploader="Bicep", isrc="GBCFB1700231", access="playable", id="free")], "free"),
+    ],
+)
+def test_verified_recording_wins_then_the_freely_playable_one(candidates, winner):
+    """The upload with the recording code goes first, and between equals the one anybody can play."""
+    source = SourceTrack(("Bicep",), "Glue", fan_uploads=False, isrcs={"GBCFB1700231": None})
+    assert decide(source, candidates).match.candidate.id == winner
+
+
+@pytest.mark.parametrize(
+    ("access", "ms", "expected"),
+    [("preview", 30_000, None), ("preview", 250_000, 250_000), ("playable", 30_000, 30_000), ("blocked", 30_000, 30_000)],
+)
+def test_preview_clip_length_is_not_the_track_length(access, ms, expected):
+    """A subscriber-only track that reports its 30 second clip has an unknown length, not a short one."""
+    assert catalogue_upload(access=access, ms=ms).duration_ms == expected
+
+
+@pytest.mark.parametrize(
+    ("item", "expected"),
+    [({"external_ids": {"isrc": "gbcfb1700231"}}, "GBCFB1700231"), ({"external_ids": {}}, ""), ({}, "")],
+)
+def test_spotify_candidate_reads_the_recording_code(item, expected):
+    """Search results carry the code, album listings do not."""
+    assert spotify_candidate({"id": "1", "name": "Glue", "artists": [], **item}).isrc == expected
+
+
+@pytest.mark.parametrize(
+    ("discogs_ms", "catalogue_ms", "upload_ms", "access", "accepted"),
+    [
+        (269_000, 269_000, 103_000, "playable", False),
+        (None, 269_000, 103_000, "playable", False),
+        (269_000, None, 103_000, "playable", False),
+        (None, None, 103_000, "playable", True),
+        (269_000, 269_000, 270_000, "playable", True),
+        (269_000, 269_000, 30_000, "preview", True),
+        (269_000, 269_000, 30_000, "playable", False),
+    ],
+)
+def test_clip_posted_under_the_code_of_the_full_track_is_refused(discogs_ms, catalogue_ms, upload_ms, access, accepted):
+    """BICEP posts "GLUE // CLIP" with the code of Glue; the code is only trusted when the length fits."""
+    source = SourceTrack(("Bicep",), "Glue", duration_ms=discogs_ms, fan_uploads=False, isrcs={"GBCFB1700229": catalogue_ms})
+    clip = catalogue_upload(title="BICEP | GLUE // CLIP", uploader="BICEP", isrc="GBCFB1700229", access=access, ms=upload_ms)
+    assert isinstance(evaluate(source, clip), Match) is accepted
+
+
+@pytest.mark.parametrize(
+    ("candidate", "accepted"),
+    [
+        (soundcloud("YAUNiMAMi - Drift (original)", "Dove"), False),
+        (soundcloud("Drift", "Dove"), False),
+        (spotify("Drift", "Dove"), True),
+        (soundcloud("Drift", "Bicep"), True),
+    ],
+)
+def test_account_named_like_an_alias_is_not_the_artist(candidate, accepted):
+    """Bicep also record as Dove; a stranger's account called Dove proves nothing, a track credited to Dove does."""
+    source = SourceTrack(("Bicep",), "Drift", aliases=("Dove",))
+    assert isinstance(evaluate(source, candidate), Match) is accepted
+
+
+@pytest.mark.parametrize(
+    ("record", "upload", "accepted"),
+    [
+        ("Bullfrog Blues", "Bullfrog Blues (WNCR Cleveland Radio Session / 1973)", False),
+        ("Bullfrog Blues", "Bullfrog Blues (Peel Sessions)", False),
+        ("Bullfrog Blues", "Bullfrog Blues", True),
+        ("Jam Session", "Jam Session", True),
+    ],
+)
+def test_radio_session_is_not_the_record(record, upload, accepted):
+    """A session recording only matches a record whose own title says session."""
+    source = SourceTrack(("Rory Gallagher",), record)
+    assert isinstance(evaluate(source, soundcloud(upload, "Rory Gallagher")), Match) is accepted
+
+
+@pytest.mark.parametrize(
+    ("record_ms", "access", "upload_ms", "isrcs", "tier"),
+    [
+        (187_000, "preview", 30_000, {}, Tier.OTHER_MIX),
+        (None, "preview", 30_000, {}, Tier.EXACT),
+        (187_000, "preview", 190_000, {}, Tier.EXACT),
+        (187_000, "playable", None, {}, Tier.EXACT),
+        (187_000, "preview", 30_000, {"USRH11505140": 187_000}, Tier.EXACT),
+    ],
+)
+def test_gated_track_with_hidden_length_is_not_called_exact(record_ms, access, upload_ms, isrcs, tier):
+    """A live bootleg with a length cannot be told from the studio cut when SoundCloud hides the length."""
+    source = SourceTrack(("Led Zeppelin",), "Since I've Been Loving You", duration_ms=record_ms, isrcs=isrcs)
+    upload = catalogue_upload("Since I've Been Loving You (Remaster)", "Led Zeppelin", "USRH11505140", access, upload_ms)
+    assert evaluate(source, upload).tier == tier

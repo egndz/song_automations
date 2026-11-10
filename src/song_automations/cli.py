@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 
 from song_automations import __version__
+from song_automations.clients.deezer import DeezerClient
 from song_automations.clients.discogs import DiscogsClient
 from song_automations.clients.http import RateLimitError
 from song_automations.clients.soundcloud import SoundCloudClient
@@ -19,6 +20,7 @@ from song_automations.errors import (
     SearchBudgetExhaustedError,
 )
 from song_automations.logging import setup_logging
+from song_automations.matching.isrc import IsrcFinder
 from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
 from song_automations.state.tracker import StateTracker
@@ -92,7 +94,8 @@ def _run_sync(
         count = state_tracker.clear_matched_tracks(platform, preserve_reviewed=True)
         console.print(f"[yellow]Cleared {count} unreviewed matches for {platform} (reviewed tracks preserved)[/yellow]\n")
 
-    engine = SyncEngine(settings, discogs_client, state_tracker, console)
+    finder = IsrcFinder(DeezerClient(), state_tracker)
+    engine = SyncEngine(settings, discogs_client, state_tracker, console, isrc_finder=finder)
 
     if platform == "spotify":
         client = SpotifyClient(settings)
@@ -581,6 +584,13 @@ def _print_sync_result(result, dry_run: bool) -> None:
     summary.add_row("Tracks flagged:", f"[yellow]{result.tracks_flagged}[/yellow]")
 
     console.print(summary)
+
+    if result.tracks_gated > 0:
+        console.print(
+            f"\n[yellow]{result.tracks_gated} of the missing tracks are on SoundCloud as official uploads "
+            "that this account cannot play in full (most need Go+).[/yellow]\n"
+            "[dim]Set SOUNDCLOUD_GATED_TRACKS=true to add them anyway.[/dim]"
+        )
 
     if result.tracks_missing > 0:
         console.print(

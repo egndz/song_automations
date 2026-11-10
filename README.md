@@ -119,7 +119,21 @@ Matching works release by release and only accepts a candidate that passes every
 
 On Spotify the tool looks for the release as an album first, then runs one search per remaining track. On SoundCloud it also looks at sets and at the label's or artist's own account.
 
-SoundCloud uploads by the artist, the label or a remixer credited on Discogs are trusted (the account name has to match exactly, so tribute accounts such as "FOOT Fighters" do not pass). Anyone else's upload, such as a vinyl rip, is only accepted for tracks Spotify does not carry and only when its length is within 20 seconds of the Discogs length. In a blind check, fan uploads of music that is on Spotify turned out to be covers, tributes or other cuts about as often as the real record, while fan uploads of rare records were mostly genuine rips. Run Spotify before SoundCloud so this works (`sync all` does).
+### SoundCloud: the same recording, proven by its code
+
+Every released recording has an ISRC, a code that names that one recording. A cover, a live take or a tribute band's version has a different code or none. For each Discogs track the tool looks the code up in the public Deezer catalogue (free, no account, and the entry has to pass the checks above as the exact version). A SoundCloud track carrying the same code is accepted whatever its account is called, so the official upload on "YusufCatStevens" or "SadeOfficial" counts for Cat Stevens and Sade.
+
+Without a matching code the older rules apply. Uploads by the artist, the label or a remixer credited on Discogs are trusted (the account name has to match exactly, so tribute accounts such as "FOOT Fighters" do not pass). Anyone else's upload, such as a vinyl rip, is only accepted for tracks that neither Deezer nor Spotify carries and only when its length is within 20 seconds of the Discogs length. In a blind check, fan uploads of released music turned out to be covers, tributes or other cuts about as often as the real record, while fan uploads of rare records were mostly genuine rips.
+
+If Deezer cannot be reached the sync still runs, it just recognises fewer official uploads that day.
+
+### SoundCloud Go+
+
+Labels deliver most released music to SoundCloud as tracks that only Go+ subscribers can play in full; everyone else hears a 30 second clip, and some are blocked outright. On a sample of this collection, three out of four tracks that Spotify carries exist on SoundCloud only in that form.
+
+SoundCloud tells the tool, per track, what the logged-in account may do with it. By default only tracks the account can play in full are added, so a Go+ account gets the label releases and a free account does not. The sync reports how many missing tracks exist only as such gated uploads, and `report matches` lists them with the status `gated`. Set `SOUNDCLOUD_GATED_TRACKS=true` to add them anyway. Switching it off again leaves the tracks that were added in place.
+
+A gated track shows a 30 second clip instead of its length. When Discogs lists a length that therefore cannot be checked, the match is kept but marked as another version in the report, unless its ISRC proves it.
 
 ### Spotify limits
 
