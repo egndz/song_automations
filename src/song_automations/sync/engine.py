@@ -14,7 +14,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from song_automations.clients.discogs import DiscogsClient, Folder, Release, Track
 from song_automations.config import Settings
 from song_automations.matching.isrc import IsrcFinder
-from song_automations.matching.matcher import PLAYABLE, Match, SourceTrack, Tier
+from song_automations.matching.matcher import PLAYABLE, Match, SourceTrack, Tier, normalize_isrc
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
     SpotifySearcher,
@@ -610,9 +610,10 @@ class SyncEngine:
         """Prepares a Discogs track for matching.
 
         On SoundCloud the recording codes of the track are looked up first, so
-        the official upload is recognised whatever its account is called. Fan
-        uploads are allowed only for tracks no catalogue carries, which keeps
-        covers out.
+        the official upload is recognised whatever its account is called. The
+        code of an exact Spotify match counts too, which covers tracks the
+        catalogue lacks. Fan uploads are allowed only for tracks no catalogue
+        carries, which keeps covers out.
 
         Args:
             track: Discogs track.
@@ -631,8 +632,13 @@ class SyncEngine:
             remixers=track.remixers,
         )
         isrcs: dict[str, int | None] = {}
-        if destination == "soundcloud" and self._isrc_finder is not None:
-            isrcs = self._isrc_finder.find(source, _first_artist(track))
+        if destination == "soundcloud":
+            carried = self._state.get_exact_spotify_recording(release.id, track.position)
+            code = normalize_isrc(carried[0]) if carried else ""
+            if code:
+                isrcs[code] = carried[1]
+            if self._isrc_finder is not None:
+                isrcs.update(self._isrc_finder.find(source, _first_artist(track)))
         released = bool(isrcs) or self._state.has_exact_spotify_match(release.id, track.position)
         return replace(source, isrcs=isrcs, fan_uploads=not released)
 
@@ -667,6 +673,7 @@ class SyncEngine:
             matched_uploader=match.candidate.uploader if match else None,
             match_reading=match.reading.kind if match else None,
             matched_duration_ms=match.candidate.duration_ms if match else None,
+            matched_isrc=(match.candidate.isrc or None) if match else None,
         )
 
     def _apply_playlist(

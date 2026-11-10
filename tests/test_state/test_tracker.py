@@ -926,3 +926,78 @@ class TestGateMatcherMigration:
         tracker = StateTracker(tmp_path / "state.db")
         tracker.save_matched_track(1, "A1", "x", "y", destination, "id", 0.9, match_tier=tier, matched_duration_ms=269_000)
         assert tracker.has_exact_spotify_match(1, "A1") is expected
+
+
+class TestSpotifyRecordingCode:
+    """Keeping the recording code Spotify lists for a matched track."""
+
+    @staticmethod
+    def _save(tracker, destination="spotify", tier="exact", code="GBCFB1700231", length=269_000):
+        """Stores a match of Bicep's Glue with its recording code.
+
+        Args:
+            tracker: Tracker.
+            destination: Platform of the match.
+            tier: Version tier of the match.
+            code: Recording code the platform lists, None when it lists none.
+            length: Length of the matched track, None when unknown.
+
+        Returns:
+            Database row id of the match.
+        """
+        tracker.save_matched_track(
+            1, "A1", "Bicep", "Glue", destination, "sp1", 0.95,
+            match_tier=tier, matched_duration_ms=length, matched_isrc=code,
+        )
+        return tracker.get_cached_match(1, "A1", destination).id
+
+    @pytest.mark.parametrize(
+        ("destination", "tier", "code", "length", "expected"),
+        [
+            ("spotify", "exact", "GBCFB1700231", 269_000, ("GBCFB1700231", 269_000)),
+            ("spotify", "exact", "GBCFB1700231", None, ("GBCFB1700231", None)),
+            ("spotify", "exact", None, 269_000, None),
+            ("spotify", "exact", "", 269_000, None),
+            ("spotify", "original", "GBCFB1700231", 269_000, None),
+            ("spotify", "other_mix", "GBCFB1700231", 269_000, None),
+            ("soundcloud", "exact", "GBCFB1700231", 269_000, None),
+        ],
+    )
+    def test_only_an_exact_spotify_match_gives_its_code(self, tmp_path, destination, tier, code, length, expected):
+        """Another mix, another platform or a match without a code gives nothing to carry over."""
+        tracker = StateTracker(tmp_path / "state.db")
+        self._save(tracker, destination, tier, code, length)
+        assert tracker.get_exact_spotify_recording(1, "A1") == expected
+        assert tracker.get_exact_spotify_recording(1, "B1") is None
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [("pending", ("GBCFB1700231", 269_000)), ("approved", ("GBCFB1700231", 269_000)), ("rejected", None)],
+    )
+    def test_refused_match_gives_no_code(self, tmp_path, status, expected):
+        """The code of a match a person refused is not carried over."""
+        tracker = StateTracker(tmp_path / "state.db")
+        tracker.update_review_status(self._save(tracker), status)
+        assert tracker.get_exact_spotify_recording(1, "A1") == expected
+
+    @pytest.mark.parametrize(("corrected", "expected"), [(False, ("GBCFB1700231", 269_000)), (True, None)])
+    def test_corrected_match_drops_the_code_of_the_old_track(self, tmp_path, corrected, expected):
+        """A track id set by hand does not keep the code of the track it replaced."""
+        tracker = StateTracker(tmp_path / "state.db")
+        row_id = self._save(tracker)
+        if corrected:
+            tracker.update_matched_track(row_id, "sp2", 1.0)
+        assert tracker.get_exact_spotify_recording(1, "A1") == expected
+
+    @pytest.mark.parametrize("column", ["matched_isrc", "matched_duration_ms"])
+    def test_missing_column_is_added_to_an_existing_database(self, tmp_path, column):
+        """A database from before the column existed gains it on the next start and keeps its rows."""
+        path = tmp_path / "state.db"
+        tracker = StateTracker(path)
+        tracker.save_matched_track(2, "B1", "Bicep", "Opal", "spotify", "sp9", 0.95, match_tier="exact")
+        with tracker._get_connection() as conn:
+            conn.execute(f"ALTER TABLE matched_tracks DROP COLUMN {column}")
+        reopened = StateTracker(path)
+        self._save(reopened)
+        assert reopened.get_exact_spotify_recording(1, "A1") == ("GBCFB1700231", 269_000)
+        assert reopened.get_cached_match(2, "B1", "spotify").destination_track_id == "sp9"

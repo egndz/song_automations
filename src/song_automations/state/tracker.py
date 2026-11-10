@@ -321,6 +321,8 @@ class StateTracker:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(matched_tracks)")}
         if "matched_duration_ms" not in columns:
             conn.execute("ALTER TABLE matched_tracks ADD COLUMN matched_duration_ms INTEGER")
+        if "matched_isrc" not in columns:
+            conn.execute("ALTER TABLE matched_tracks ADD COLUMN matched_isrc TEXT")
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version >= MATCHER_SCHEMA_VERSION:
             return
@@ -703,6 +705,7 @@ class StateTracker:
         matched_uploader: str | None = None,
         match_reading: str | None = None,
         matched_duration_ms: int | None = None,
+        matched_isrc: str | None = None,
     ) -> None:
         """Save a track match to the cache.
 
@@ -719,6 +722,7 @@ class StateTracker:
             matched_uploader: Uploading account on SoundCloud.
             match_reading: Which reading of the title passed.
             matched_duration_ms: Length of the matched platform track.
+            matched_isrc: Recording code the platform lists for the matched track.
         """
         with self._get_connection() as conn:
             conn.execute(
@@ -727,8 +731,8 @@ class StateTracker:
                 (discogs_release_id, discogs_track_position, artist, track_name,
                  destination, destination_track_id, match_confidence,
                  match_tier, matched_title, matched_uploader, match_reading,
-                 matched_duration_ms)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 matched_duration_ms, matched_isrc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     discogs_release_id,
@@ -743,6 +747,7 @@ class StateTracker:
                     matched_uploader,
                     match_reading,
                     matched_duration_ms,
+                    matched_isrc,
                 ),
             )
 
@@ -767,6 +772,34 @@ class StateTracker:
                 (discogs_release_id, track_position),
             ).fetchone()
         return row is not None
+
+    def get_exact_spotify_recording(
+        self, discogs_release_id: int, track_position: str
+    ) -> tuple[str, int | None] | None:
+        """Reads the recording code Spotify lists for the exact version of a track.
+
+        Args:
+            discogs_release_id: Discogs release ID.
+            track_position: Track position.
+
+        Returns:
+            The code and the length of the Spotify track in milliseconds, or
+            None when no exact Spotify match with a code is stored or a person
+            refused that match.
+        """
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT matched_isrc, matched_duration_ms FROM matched_tracks
+                WHERE discogs_release_id = ? AND discogs_track_position = ?
+                  AND destination = 'spotify' AND match_tier = 'exact'
+                  AND destination_track_id IS NOT NULL
+                  AND matched_isrc IS NOT NULL AND matched_isrc != ''
+                  AND (review_status IS NULL OR review_status != 'rejected')
+                """,
+                (discogs_release_id, track_position),
+            ).fetchone()
+        return (row[0], row[1]) if row else None
 
     def save_missing_track(
         self,
@@ -1042,6 +1075,9 @@ class StateTracker:
     ) -> None:
         """Update a matched track with corrected info.
 
+        The recording code stored for the replaced track is dropped, since it
+        names another recording.
+
         Args:
             track_id: Database row ID.
             destination_track_id: New platform-specific track ID.
@@ -1051,7 +1087,8 @@ class StateTracker:
             conn.execute(
                 """
                 UPDATE matched_tracks
-                SET destination_track_id = ?, match_confidence = ?, searched_at = CURRENT_TIMESTAMP
+                SET destination_track_id = ?, match_confidence = ?, searched_at = CURRENT_TIMESTAMP,
+                    matched_isrc = NULL
                 WHERE id = ?
                 """,
                 (destination_track_id, match_confidence, track_id),
