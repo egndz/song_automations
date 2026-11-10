@@ -259,30 +259,66 @@ def test_search_title(title, expected):
     assert search_title(title) == expected
 
 
-class ScopedSoundCloud(FakeSoundCloud):
-    """SoundCloud stand-in that says which access levels it searches.
+def upload(id, access, uploader="Bicep"):
+    """Builds a raw SoundCloud track.
 
     Args:
-        scope: Access levels.
+        id: Track id.
+        access: Access level for the account.
+        uploader: Account name.
+
+    Returns:
+        Raw track.
+    """
+    return {"id": id, "title": "Glue", "user": {"username": uploader}, "duration": 300_000, "access": access}
+
+
+class StockedSoundCloud(FakeSoundCloud):
+    """SoundCloud stand-in whose track search returns uploads.
+
+    Args:
+        uploads: Raw tracks every search returns.
     """
 
-    def __init__(self, scope: str) -> None:
+    def __init__(self, uploads) -> None:
         super().__init__()
-        self.access_scope = scope
+        self.uploads = list(uploads)
+        self.searches = 0
+
+    def search_raw(self, query):
+        """Searches tracks.
+
+        Args:
+            query: Query text.
+
+        Returns:
+            The uploads.
+        """
+        self.searches += 1
+        return self.uploads
 
 
 @pytest.mark.parametrize(
-    ("first", "second", "shared"),
+    ("uploads", "allow_gated", "expected"),
     [
-        ("playable", "playable", True),
-        ("playable,preview,blocked", "playable,preview,blocked", True),
-        ("playable", "playable,preview,blocked", False),
+        ([upload(1, "preview"), upload(2, "blocked")], False, None),
+        ([upload(1, "preview"), upload(2, "blocked")], True, "1"),
+        ([upload(1, "preview"), upload(2, "playable")], False, "2"),
+        ([upload(1, "preview"), upload(2, "playable")], True, "2"),
     ],
 )
-def test_catalogue_searches_are_stored_apart(first, second, shared):
-    """Switching the catalogue setting never reuses results fetched under the other one."""
-    cache = MemoryCache()
-    SoundCloudSearcher(ScopedSoundCloud(first), cache).search("Bicep Glue")
-    before = set(cache.data)
-    SoundCloudSearcher(ScopedSoundCloud(second), cache).search("Bicep Glue")
-    assert (set(cache.data) == before) is shared
+def test_tracks_the_account_cannot_play_need_permission(uploads, allow_gated, expected):
+    """A clip or a blocked track only matches when allowed, and a playable one is preferred."""
+    searcher = SoundCloudSearcher(StockedSoundCloud(uploads), MemoryCache(), allow_gated=allow_gated)
+    [match] = resolve_release(searcher, [SourceTrack(("Bicep",), "Glue")], ["Bicep"], "Bicep", "Isles")
+    assert (match.candidate.id if match else None) == expected
+
+
+@pytest.mark.parametrize("allow_gated", [False, True])
+def test_gated_view_reuses_the_stored_searches(allow_gated):
+    """Looking again with gated tracks allowed costs no request."""
+    client, cache = StockedSoundCloud([upload(1, "preview")]), MemoryCache()
+    searcher = SoundCloudSearcher(client, cache, allow_gated=allow_gated)
+    searcher.search("Bicep Glue")
+    assert [c.id for c in searcher.including_gated().search("Bicep Glue")] == ["1"]
+    assert client.searches == 1

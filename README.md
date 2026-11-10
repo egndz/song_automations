@@ -129,11 +129,9 @@ If Deezer cannot be reached the sync still runs, it just recognises fewer offici
 
 ### SoundCloud Go+
 
-Labels deliver most released music to SoundCloud as tracks that only Go+ (or DJ) subscribers can play in full; everyone else hears a 30 second clip. On a sample of this collection, three out of four tracks that Spotify carries exist on SoundCloud only in that form. `SOUNDCLOUD_CATALOGUE` decides whether they may be matched:
+Labels deliver most released music to SoundCloud as tracks that only Go+ subscribers can play in full; everyone else hears a 30 second clip, and some are blocked outright. On a sample of this collection, three out of four tracks that Spotify carries exist on SoundCloud only in that form.
 
-- `auto` (default): include them when the logged-in account has Go+ or DJ.
-- `always`: include them whatever the plan.
-- `never`: only tracks anyone can play in full.
+SoundCloud tells the tool, per track, what the logged-in account may do with it. By default only tracks the account can play in full are added, so a Go+ account gets the label releases and a free account does not. The sync reports how many missing tracks exist only as such gated uploads, and `report matches` lists them with the status `gated`. Set `SOUNDCLOUD_GATED_TRACKS=true` to add them anyway.
 
 ### Spotify limits
 

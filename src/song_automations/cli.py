@@ -108,32 +108,12 @@ def _run_sync(
         )
     else:
         client = SoundCloudClient(settings)
-        _choose_catalogue(settings, client)
         _run_want(settings, client, platform, discogs_client, state_tracker, dry_run)
         return engine.sync_to_soundcloud(
             playlist_client=client,
             include_wantlist=not exclude_wantlist,
             folder_names=folder_names,
             dry_run=dry_run,
-        )
-
-
-def _choose_catalogue(settings: Settings, client: SoundCloudClient) -> None:
-    """Decides whether SoundCloud matches may be subscriber-only tracks.
-
-    Args:
-        settings: Application settings.
-        client: SoundCloud client.
-    """
-    mode = settings.soundcloud_catalogue
-    enabled = client.has_full_catalogue() if mode == "auto" else mode == "always"
-    client.include_catalogue(enabled)
-    if enabled:
-        console.print("[dim]SoundCloud: official releases that need Go+ are included.[/dim]")
-    else:
-        console.print(
-            "[dim]SoundCloud: official releases that need Go+ are left out. "
-            "Set SOUNDCLOUD_CATALOGUE=always to include them.[/dim]"
         )
 
 
@@ -604,6 +584,13 @@ def _print_sync_result(result, dry_run: bool) -> None:
     summary.add_row("Tracks flagged:", f"[yellow]{result.tracks_flagged}[/yellow]")
 
     console.print(summary)
+
+    if result.tracks_gated > 0:
+        console.print(
+            f"\n[yellow]{result.tracks_gated} of the missing tracks are on SoundCloud as official uploads "
+            "that this account cannot play in full (most need Go+).[/yellow]\n"
+            "[dim]Set SOUNDCLOUD_GATED_TRACKS=true to add them anyway.[/dim]"
+        )
 
     if result.tracks_missing > 0:
         console.print(

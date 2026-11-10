@@ -3,7 +3,6 @@
 import base64
 import hashlib
 import json
-import re
 import secrets
 import webbrowser
 from dataclasses import dataclass
@@ -18,9 +17,7 @@ from song_automations.clients.http import DEFAULT_TIMEOUT, RETRYABLE_EXCEPTIONS,
 from song_automations.config import Settings
 from song_automations.matching.matcher import clean
 
-PLAYABLE_ONLY = "playable"
-WHOLE_CATALOGUE = "playable,preview,blocked"
-CATALOGUE_PLAN = re.compile(r"high.?tier|go\s*\+|go.?plus|\bdj\b", re.IGNORECASE)
+EVERY_ACCESS = "playable,preview,blocked"
 
 
 @dataclass
@@ -140,7 +137,6 @@ class SoundCloudClient:
         self._access_token: str | None = None
         self._refresh_token: str | None = None
         self._user_id: int | None = None
-        self._access = PLAYABLE_ONLY
 
         self._http_client = httpx.Client(
             timeout=DEFAULT_TIMEOUT,
@@ -403,42 +399,12 @@ class SoundCloudClient:
         """
         return body if isinstance(body, list) else (body or {}).get("collection", [])
 
-    @property
-    def access_scope(self) -> str:
-        """Access levels that searches return, as the API spells them."""
-        return self._access
-
-    def include_catalogue(self, enabled: bool) -> None:
-        """Chooses whether searches return the licensed catalogue.
-
-        Labels deliver their releases to SoundCloud as tracks that only
-        subscribers can play in full, which the API marks preview or blocked.
-
-        Args:
-            enabled: True to search every track, False for freely playable ones.
-        """
-        self._access = WHOLE_CATALOGUE if enabled else PLAYABLE_ONLY
-
-    def plan_names(self) -> list[str]:
-        """Lists the subscription plans of the logged-in account.
-
-        Returns:
-            Plan ids and names as SoundCloud reports them.
-        """
-        body = self._get_json(f"{self.API_BASE}/me")
-        plans = [(item or {}).get("product") or {} for item in body.get("subscriptions") or []]
-        return [str(text) for plan in plans for text in (plan.get("id"), plan.get("name")) if text]
-
-    def has_full_catalogue(self) -> bool:
-        """Checks whether the account can play the licensed catalogue in full.
-
-        Returns:
-            True for a Go+ or DJ subscription.
-        """
-        return any(CATALOGUE_PLAN.search(name) for name in self.plan_names())
-
     def search_raw(self, query: str, limit: int = 50) -> list[dict]:
-        """Searches tracks at the chosen access levels and returns the raw items.
+        """Searches tracks and returns the raw items.
+
+        Every access level is asked for. SoundCloud marks each track with what
+        the logged-in account may do with it: playable in full, a preview clip
+        (releases that need Go+) or blocked, and the matcher decides from that.
 
         Args:
             query: Search query.
@@ -447,7 +413,7 @@ class SoundCloudClient:
         Returns:
             Raw tracks.
         """
-        params = {"q": query, "limit": limit, "access": self._access}
+        params = {"q": query, "limit": limit, "access": EVERY_ACCESS}
         return self._rows(self._get_json(f"{self.API_BASE}/tracks", params))
 
     def search_playlists_raw(self, query: str, limit: int = 20) -> list[dict]:
@@ -460,7 +426,7 @@ class SoundCloudClient:
         Returns:
             Raw sets.
         """
-        params = {"q": query, "limit": limit, "show_tracks": "true", "access": self._access}
+        params = {"q": query, "limit": limit, "show_tracks": "true", "access": EVERY_ACCESS}
         return self._rows(self._get_json(f"{self.API_BASE}/playlists", params))
 
     def account_tracks_raw(self, name: str, max_accounts: int = 2, max_pages: int = 3) -> list[dict]:
@@ -484,7 +450,7 @@ class SoundCloudClient:
         tracks: list[dict] = []
         for user in users[:max_accounts]:
             url = f"{self.API_BASE}/users/{user.get('urn') or user['id']}/tracks"
-            params = {"limit": 200, "access": self._access, "linked_partitioning": "true"}
+            params = {"limit": 200, "access": EVERY_ACCESS, "linked_partitioning": "true"}
             for _ in range(max_pages):
                 body = self._get_json(url, params)
                 tracks += self._rows(body)

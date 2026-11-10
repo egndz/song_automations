@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 Destination = Literal["spotify", "soundcloud"]
 MATCHER_SCHEMA_VERSION = 2
+GATED = "gated"
 EventType = Literal[
     "sync_start",
     "sync_complete",

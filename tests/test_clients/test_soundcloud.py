@@ -218,8 +218,8 @@ class TestParseTrack:
         assert track.likes_count == 0
 
 
-class TestCatalogueAccess:
-    """Tests for choosing between freely playable tracks and the whole catalogue."""
+class TestSearchAccess:
+    """Tests for which tracks searches ask SoundCloud for."""
 
     @pytest.fixture
     def client(self, settings, monkeypatch):
@@ -252,36 +252,15 @@ class TestCatalogueAccess:
         monkeypatch.setattr(client, "_get_json", fake_get)
         return client
 
-    @pytest.mark.parametrize(
-        ("subscriptions", "expected"),
-        [
-            ([{"product": {"id": "consumer-high-tier", "name": "SoundCloud Go+"}}], True),
-            ([{"product": {"id": "go-plus", "name": "Go+"}}], True),
-            ([{"product": {"id": "dj", "name": "SoundCloud DJ"}}], True),
-            ([{"product": {"id": "free", "name": "Free"}}], False),
-            ([{"product": {"id": "creator-pro-unlimited", "name": "Next Pro"}}], False),
-            ([{"product": {"id": "consumer-mid-tier", "name": "SoundCloud Go"}}], False),
-            ([{"product": None}], False),
-            ([], False),
-            (None, False),
-        ],
-    )
-    def test_only_a_full_catalogue_plan_counts(self, client, subscriptions, expected):
-        """Go+ and DJ play label releases in full; Free, Go and creator plans do not."""
-        client.body = {"id": 1, "subscriptions": subscriptions}
-        assert client.has_full_catalogue() is expected
-
-    @pytest.mark.parametrize(
-        ("enabled", "access"),
-        [(False, "playable"), (True, "playable,preview,blocked")],
-    )
-    def test_searches_ask_for_the_chosen_access(self, client, enabled, access):
-        """Track, set and account searches all follow the setting."""
-        client.include_catalogue(enabled)
-        client.search_raw("Bicep Glue")
-        client.search_playlists_raw("Bicep Isles")
-        client.body = [{"username": "Bicep", "track_count": 3, "followers_count": 9, "urn": "soundcloud:users:1"}]
-        client.account_tracks_raw("Bicep")
+    @pytest.mark.parametrize("search", ["tracks", "sets", "account"])
+    def test_searches_ask_for_every_access_level(self, client, search):
+        """Label releases are only returned when preview and blocked tracks are asked for too."""
+        if search == "tracks":
+            client.search_raw("Bicep Glue")
+        elif search == "sets":
+            client.search_playlists_raw("Bicep Isles")
+        else:
+            client.body = [{"username": "Bicep", "track_count": 3, "followers_count": 9, "urn": "soundcloud:users:1"}]
+            client.account_tracks_raw("Bicep")
         asked = [params["access"] for _, params in client.sent if params and "access" in params]
-        assert asked == [access] * 3
-        assert client.access_scope == access
+        assert asked == ["playable,preview,blocked"]
