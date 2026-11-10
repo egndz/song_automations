@@ -1,22 +1,40 @@
 """FastAPI application for reviewing track matches."""
 
-import math
 import re
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from song_automations.clients.discogs import DiscogsClient
+from song_automations.clients.deezer import DeezerClient
+from song_automations.clients.discogs import DiscogsClient, Track
 from song_automations.clients.soundcloud import SoundCloudClient
 from song_automations.clients.spotify import SpotifyClient
-from song_automations.config import get_settings
-from song_automations.matching.fuzzy import parse_track_title, score_candidate
-from song_automations.state.tracker import StateTracker
+from song_automations.config import Settings, get_settings
+from song_automations.errors import (
+    LoginFailedError,
+    LoginTimeoutError,
+    RateLimitedError,
+    ReauthRequiredError,
+    SearchBudgetExhaustedError,
+)
+from song_automations.matching.isrc import IsrcFinder
+from song_automations.matching.matcher import Match, SourceTrack, decide
+from song_automations.matching.resolver import (
+    SoundCloudSearcher,
+    SpotifySearcher,
+    search_title,
+)
+from song_automations.state.tracker import MatchedTrack, StateTracker
 
 ITEMS_PER_PAGE = 10
 LOGS_PER_PAGE = 50
+MAX_SEARCHES = 2
+MAX_ALTERNATIVES = 10
 
 
 def extract_track_id(url: str, platform: str) -> str | None:
@@ -47,11 +65,167 @@ def extract_track_id(url: str, platform: str) -> str | None:
 
     return None
 
+
+def duration_ms(text: str) -> int | None:
+    """Reads a Discogs duration.
+
+    Args:
+        text: Duration such as 6:32.
+
+    Returns:
+        Milliseconds, or None when absent or malformed.
+    """
+    found = re.match(r"^(\d+):(\d{2})$", (text or "").strip())
+    return (int(found[1]) * 60 + int(found[2])) * 1000 if found else None
+
+
+def build_source(row: MatchedTrack, release_tracks: Sequence[Track]) -> tuple[SourceTrack, str]:
+    """Prepares a stored track for matching, the way a sync prepares it.
+
+    The Discogs tracklist supplies the credited names, the length, the labels
+    and the remixers. Without it only the stored artist and title are known.
+
+    Args:
+        row: Stored match under review.
+        release_tracks: Discogs tracks of the release, empty when unavailable.
+
+    Returns:
+        The source track and the artist name worth typing into a search box.
+    """
+    track = next((t for t in release_tracks if t.position == row.discogs_track_position), None)
+    if track is None:
+        return SourceTrack(artists=(row.artist,), title=row.track_name), row.artist
+    source = SourceTrack(
+        artists=track.artist_names or (track.artist,),
+        title=track.title,
+        duration_ms=duration_ms(track.duration),
+        release_title=track.release_title,
+        labels=track.labels,
+        remixers=track.remixers,
+    )
+    return source, track.artist_names[0] if track.artist_names else track.artist
+
+
+def alternative_queries(searcher, artist: str, title: str) -> list[str]:
+    """Lists the searches one request may make, most precise first.
+
+    Args:
+        searcher: Platform searcher.
+        artist: Artist to search for.
+        title: Track title.
+
+    Returns:
+        At most MAX_SEARCHES queries, without repeats.
+    """
+    queries = [*searcher.track_queries(artist, title), f"{artist} {search_title(title)}"]
+    return list(dict.fromkeys(queries))[:MAX_SEARCHES]
+
+
+def find_alternatives(
+    searcher, source: SourceTrack, queries: Sequence[str], refused: frozenset[str]
+) -> list[Match]:
+    """Searches a platform and keeps the candidates that pass the matching gates.
+
+    Args:
+        searcher: Platform searcher.
+        source: Source track.
+        queries: Searches to run.
+        refused: Candidate ids a person already refused for this track.
+
+    Returns:
+        Accepted candidates, best first.
+    """
+    candidates = [
+        candidate
+        for query in queries
+        for candidate in searcher.search(query)
+        if candidate.id not in refused
+    ]
+    decision = decide(source, candidates)
+    return ([decision.match] if decision.match else []) + decision.alternatives
+
+
+def describe_alternative(match: Match, destination: str, current_id: str | None) -> dict:
+    """Turns an accepted candidate into the JSON the review page shows.
+
+    Args:
+        match: Accepted candidate.
+        destination: Either 'spotify' or 'soundcloud'.
+        current_id: Platform track id the stored match points at.
+
+    Returns:
+        One entry of the alternatives list. The score is the confidence, kept
+        under that name for the page.
+    """
+    track_id = match.candidate.id
+    if destination == "spotify":
+        embed_url = f"https://open.spotify.com/embed/track/{track_id}?utm_source=generator&theme=0"
+        external_url = f"https://open.spotify.com/track/{track_id}"
+    else:
+        embed_url = (
+            "https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/"
+            f"{track_id}&color=%23ff5500&auto_play=false&hide_related=true&show_comments=false"
+        )
+        external_url = ""
+    return {
+        "track_id": track_id,
+        "title": match.candidate.raw_title,
+        "artist": ", ".join(match.reading.artists),
+        "score": match.confidence,
+        "confidence": match.confidence,
+        "tier": match.tier.name.lower(),
+        "embed_url": embed_url,
+        "external_url": external_url,
+        "is_current": track_id == current_id,
+    }
+
+
+def platform_error(
+    status_code: int,
+    error: str,
+    platform: str,
+    detail: str,
+    retry_after_seconds: int | None = None,
+) -> JSONResponse:
+    """Builds the JSON answer for a platform that cannot be searched right now.
+
+    Args:
+        status_code: HTTP status.
+        error: Short machine readable reason.
+        platform: Platform name.
+        detail: Message for the person reviewing.
+        retry_after_seconds: Seconds until the platform accepts requests again, if known.
+
+    Returns:
+        The response.
+    """
+    content: dict[str, str | int] = {"error": error, "platform": platform, "detail": detail}
+    headers = None
+    if retry_after_seconds is not None:
+        content["retry_after_seconds"] = retry_after_seconds
+        headers = {"Retry-After": str(retry_after_seconds)}
+    return JSONResponse(status_code=status_code, content=content, headers=headers)
+
+
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
-def create_app() -> FastAPI:
+def create_app(
+    settings: Settings | None = None,
+    client_factories: Mapping[str, Callable[[Settings], object]] | None = None,
+    discogs_client: DiscogsClient | None = None,
+    isrc_finder: IsrcFinder | None = None,
+) -> FastAPI:
     """Create and configure the FastAPI application.
+
+    Each platform client is built on first use and kept for the life of the
+    app, so the Spotify search budget counts every request, not just one.
+
+    Args:
+        settings: Application settings, read from the environment when omitted.
+        client_factories: Builds the client of a platform, by platform name.
+        discogs_client: Discogs client, built from the settings when omitted.
+        isrc_finder: Looks up recording codes for SoundCloud, built when omitted.
 
     Returns:
         Configured FastAPI app instance.
@@ -61,11 +235,111 @@ def create_app() -> FastAPI:
         description="Review flagged track matches",
     )
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
-    settings = get_settings()
+    settings = settings or get_settings()
     tracker = StateTracker(settings.db_path)
-    discogs = DiscogsClient(settings) if settings.discogs_user_token else None
+    discogs = discogs_client or (DiscogsClient(settings) if settings.discogs_user_token else None)
+    factories = dict(client_factories or {"spotify": SpotifyClient, "soundcloud": SoundCloudClient})
+    finder = isrc_finder or IsrcFinder(DeezerClient(), tracker)
 
     release_cache: dict[int, dict] = {}
+    release_tracks: dict[int, list[Track]] = {}
+    searchers: dict[str, SpotifySearcher | SoundCloudSearcher] = {}
+
+    def get_release_tracks(release_id: int) -> list[Track]:
+        """Fetches and caches the Discogs tracks of a release.
+
+        Args:
+            release_id: Discogs release ID.
+
+        Returns:
+            Tracks of the release, empty without a Discogs client.
+        """
+        if discogs is None:
+            return []
+        if release_id not in release_tracks:
+            release_tracks[release_id] = discogs.get_release_tracks(release_id)
+        return release_tracks[release_id]
+
+    def get_searcher(destination: str) -> SpotifySearcher | SoundCloudSearcher:
+        """Builds the searcher of a platform on first use and keeps it.
+
+        Args:
+            destination: Either 'spotify' or 'soundcloud'.
+
+        Returns:
+            The searcher, backed by the one client of that platform.
+        """
+        platform = "spotify" if destination == "spotify" else "soundcloud"
+        if platform not in searchers:
+            client = factories[platform](settings)
+            if platform == "spotify":
+                searchers[platform] = SpotifySearcher(client, tracker)
+            else:
+                searchers[platform] = SoundCloudSearcher(
+                    client, tracker, allow_gated=settings.soundcloud_gated_tracks
+                )
+        return searchers[platform]
+
+    @app.exception_handler(RateLimitedError)
+    async def rate_limited(request: Request, error: RateLimitedError) -> JSONResponse:
+        """Reports that a platform refuses requests for now.
+
+        Args:
+            request: Request that hit the limit.
+            error: The limit.
+
+        Returns:
+            HTTP 429 naming the platform and the wait.
+        """
+        until = datetime.now() + timedelta(seconds=error.retry_after_seconds)
+        return platform_error(
+            429,
+            "rate_limited",
+            error.platform,
+            f"{error.platform} has rate limited this app until {until:%Y-%m-%d %H:%M}. "
+            "Nothing was changed. Try again after that time.",
+            retry_after_seconds=error.retry_after_seconds,
+        )
+
+    @app.exception_handler(ReauthRequiredError)
+    async def reauth_required(request: Request, error: ReauthRequiredError) -> JSONResponse:
+        """Reports that a platform login has expired or could not be renewed.
+
+        Args:
+            request: Request that needed the login.
+            error: The expired or failed login.
+
+        Returns:
+            HTTP 401 saying how to log in again.
+        """
+        detail = (
+            f"Your {error.platform} login has expired. Run "
+            f"'song-automations login {error.platform.lower()}' in a terminal, approve the "
+            f"{error.platform} page that opens, then try again."
+        )
+        if isinstance(error, LoginTimeoutError | LoginFailedError):
+            detail = str(error)
+        return platform_error(401, "reauth_required", error.platform, detail)
+
+    @app.exception_handler(SearchBudgetExhaustedError)
+    async def budget_exhausted(request: Request, error: SearchBudgetExhaustedError) -> JSONResponse:
+        """Reports that the review app made all the searches it may make.
+
+        Args:
+            request: Request that asked for one search too many.
+            error: The used budget.
+
+        Returns:
+            HTTP 429 naming the budget.
+        """
+        return platform_error(
+            429,
+            "search_budget_exhausted",
+            error.platform,
+            f"The review app used its {error.budget} {error.platform} searches, the limit that "
+            f"keeps it under the daily quota of {error.platform}. Searches already made stay "
+            "saved. Restart the review app to search again.",
+        )
 
     def get_release_info(release_id: int) -> dict | None:
         """Fetch and cache Discogs release info."""
@@ -135,9 +409,9 @@ def create_app() -> FastAPI:
         }
 
         return templates.TemplateResponse(
+            request,
             "index.html",
             {
-                "request": request,
                 "tracks_with_info": tracks_with_info,
                 "stats": stats,
                 "destination_filter": destination,
@@ -230,98 +504,61 @@ def create_app() -> FastAPI:
 
     @app.get("/alternatives/{track_id}")
     async def get_alternatives(track_id: int):
-        """Search for alternative matches for a track."""
+        """Search for alternative matches for a track with the live matcher.
+
+        At most MAX_SEARCHES platform searches are made, and none when the
+        answers are already stored. Only candidates that pass the matching
+        gates are listed, best first.
+
+        Args:
+            track_id: Database row ID of the match under review.
+
+        Returns:
+            The first query and the accepted candidates with tier and confidence.
+
+        Raises:
+            HTTPException: If the track is unknown, or Discogs or the platform
+                client cannot be used.
+            RateLimitedError: When the platform asks for a long wait.
+            ReauthRequiredError: When the platform login has expired.
+            SearchBudgetExhaustedError: When the app has used its searches.
+        """
         track = tracker.get_matched_track_by_id(track_id)
         if not track:
             raise HTTPException(status_code=404, detail="Track not found")
 
-        release_info = get_release_info(track.discogs_release_id)
-        label = ""
-        if release_info and release_info.get("labels"):
-            label = release_info["labels"][0].get("name", "")
-
-        parsed = parse_track_title(track.track_name, track.artist)
-
-        queries = [parsed.search_query]
-        if parsed.version:
-            queries.append(parsed.fallback_query)
-        if label:
-            queries.append(f"{label} {parsed.base_title}")
-        if parsed.remixer:
-            queries.append(f"{parsed.remixer} {parsed.base_title}")
-        queries.append(parsed.base_title)
+        try:
+            tracks = get_release_tracks(track.discogs_release_id)
+        except Exception as error:
+            raise HTTPException(status_code=502, detail=f"Discogs lookup failed: {error}") from error
 
         try:
-            if track.destination == "spotify":
-                client = SpotifyClient(settings)
-            else:
-                client = SoundCloudClient(settings)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to initialize client: {e}")
+            searcher = get_searcher(track.destination)
+        except Exception as error:
+            raise HTTPException(status_code=500, detail=f"Failed to initialize client: {error}") from error
 
-        all_results = []
-        seen_ids = set()
+        source, artist = build_source(track, tracks)
+        isrcs: dict[str, int | None] = {}
+        if track.destination == "soundcloud":
+            isrcs = finder.find(source, artist)
+        released = bool(isrcs) or tracker.has_exact_spotify_match(
+            track.discogs_release_id, track.discogs_track_position
+        )
+        source = replace(source, isrcs=isrcs, fan_uploads=not released)
 
-        for query in queries[:5]:
-            try:
-                results = client.search_tracks(query, limit=10)
-                for result in results:
-                    result_track = result.track
-                    track_id_val = result_track.id
-                    if track_id_val in seen_ids:
-                        continue
-                    seen_ids.add(track_id_val)
-
-                    if track.destination == "spotify":
-                        candidate_title = result_track.name
-                        candidate_artist = result_track.artist
-                        popularity = result_track.popularity
-                        is_verified = result.is_verified
-                    else:
-                        candidate_title = result_track.title
-                        candidate_artist = result_track.artist
-                        raw_plays = result_track.playback_count or 0
-                        popularity = int(math.log10(raw_plays + 1) / 6 * 100)
-                        is_verified = result.is_verified
-
-                    total_score, artist_score, title_score, verified_bonus, pop_score = score_candidate(
-                        parsed_track=parsed,
-                        candidate_title=candidate_title,
-                        candidate_artist=candidate_artist,
-                        is_verified=is_verified,
-                        popularity=popularity,
-                        max_popularity=100,
-                        label=label,
-                    )
-
-                    if track.destination == "spotify":
-                        embed_url = f"https://open.spotify.com/embed/track/{track_id_val}?utm_source=generator&theme=0"
-                        external_url = f"https://open.spotify.com/track/{track_id_val}"
-                    else:
-                        embed_url = f"https://w.soundcloud.com/player/?url=https%3A//api.soundcloud.com/tracks/{track_id_val}&color=%23ff5500&auto_play=false&hide_related=true&show_comments=false"
-                        external_url = result_track.permalink_url if hasattr(result_track, 'permalink_url') else ""
-
-                    all_results.append({
-                        "track_id": str(track_id_val),
-                        "title": candidate_title,
-                        "artist": candidate_artist,
-                        "score": round(total_score, 3),
-                        "artist_score": round(artist_score, 3),
-                        "title_score": round(title_score, 3),
-                        "is_verified": is_verified,
-                        "embed_url": embed_url,
-                        "external_url": external_url,
-                        "is_current": str(track_id_val) == track.destination_track_id,
-                    })
-            except Exception:
-                continue
-
-        all_results.sort(key=lambda x: x["score"], reverse=True)
+        queries = alternative_queries(searcher, artist, source.title)
+        refused = tracker.get_rejected_ids(
+            track.discogs_release_id, track.discogs_track_position, track.destination
+        )
+        accepted = find_alternatives(searcher, source, queries, refused)
 
         return {
             "track_id": track_id,
-            "search_query": parsed.search_query,
-            "alternatives": all_results[:10],
+            "search_query": queries[0],
+            "alternatives": [
+                describe_alternative(match, track.destination, track.destination_track_id)
+                for match in accepted[:MAX_ALTERNATIVES]
+            ],
         }
 
     @app.post("/select-alternative/{track_id}")
@@ -385,9 +622,9 @@ def create_app() -> FastAPI:
         }
 
         return templates.TemplateResponse(
+            request,
             "logs.html",
             {
-                "request": request,
                 "logs": logs,
                 "recent_syncs": recent_syncs,
                 "sync_summary": sync_summary,
