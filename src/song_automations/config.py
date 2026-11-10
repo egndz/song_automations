@@ -25,6 +25,7 @@ class Settings(BaseSettings):
         playlist_prefix: Prefix for created playlists.
         soundcloud_gated_tracks: Whether SoundCloud tracks the account cannot play in full may match.
         spotify_search_budget: Spotify searches one run may make.
+        login_wait_seconds: Seconds to wait for a login page to be approved in the browser.
         min_confidence: Minimum confidence threshold for track matching.
         high_confidence: Threshold for high confidence matches (auto-add).
         log_level: Logging level for file output.
@@ -91,6 +92,11 @@ class Settings(BaseSettings):
         default=400,
         ge=1,
         description="Spotify searches one run may make; development mode apps are blocked for a day after about 900",
+    )
+    login_wait_seconds: int = Field(
+        default=600,
+        ge=1,
+        description="Seconds to wait for a platform login page to be approved in the browser",
     )
     min_confidence: float = Field(
         default=0.30,

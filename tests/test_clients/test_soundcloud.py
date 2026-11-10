@@ -3,13 +3,19 @@
 import base64
 import hashlib
 
+import httpx
 import pytest
 
+from song_automations.clients import soundcloud
+from song_automations.clients.http import RateLimitError
 from song_automations.clients.soundcloud import (
+    OAuthCallbackHandler,
     SoundCloudClient,
     SoundCloudPlaylist,
     SoundCloudTrack,
 )
+from song_automations.config import Settings
+from song_automations.errors import LoginFailedError, LoginTimeoutError, ReauthRequiredError
 
 
 class TestPKCEGeneration:
@@ -264,3 +270,215 @@ class TestSearchAccess:
             client.account_tracks_raw("Bicep")
         asked = [params["access"] for _, params in client.sent if params and "access" in params]
         assert asked == ["playable,preview,blocked"]
+
+
+class FakeCallbackServer:
+    """Local server that never touches the network.
+
+    Args:
+        codes: What each handled request brings, None for a request without a code.
+        clock: Shared fake clock, advanced by a second per handled request.
+    """
+
+    def __init__(self, codes, clock):
+        self.timeout = None
+        self.closed = False
+        self.timeouts = []
+        self._codes = list(codes)
+        self._clock = clock
+
+    def handle_request(self):
+        """Handles one request, or lets a second pass when none is left."""
+        self.timeouts.append(self.timeout)
+        self._clock[0] += 1
+        if self._codes:
+            OAuthCallbackHandler.authorization_code = self._codes.pop(0)
+
+    def server_close(self):
+        """Records that the port was released."""
+        self.closed = True
+
+
+class FakeTokenResponse:
+    """Answer of the token endpoint.
+
+    Args:
+        status_code: HTTP status.
+        body: Decoded JSON body.
+    """
+
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self.headers = {}
+        self._body = body
+
+    def json(self):
+        """Returns the body.
+
+        Returns:
+            Decoded JSON.
+        """
+        return self._body
+
+    def raise_for_status(self):
+        """Raises for an error status, like httpx does.
+
+        Raises:
+            httpx.HTTPStatusError: When the status is 400 or higher.
+        """
+        if self.status_code >= 400:
+            request = httpx.Request("POST", "https://secure.soundcloud.com/oauth/token")
+            raise httpx.HTTPStatusError(
+                f"status {self.status_code}",
+                request=request,
+                response=httpx.Response(self.status_code, request=request),
+            )
+
+
+class TestSoundCloudLogin:
+    """Waiting for the SoundCloud approval page, for a configurable time."""
+
+    @staticmethod
+    def _client(tmp_path, monkeypatch, codes, wait=600, token=None, saved=None):
+        """Builds a client whose browser, clock, local server and token endpoint are fakes.
+
+        Args:
+            tmp_path: Folder standing in for the data directory.
+            monkeypatch: Pytest monkeypatch.
+            codes: What each request to the local server brings.
+            wait: Seconds to wait for the approval.
+            token: Answer of the token endpoint.
+            saved: Access token of a saved login, if any.
+
+        Returns:
+            The client, with the fake server in client.server and opened pages in client.opened.
+        """
+        if saved:
+            (tmp_path / ".soundcloud_token.json").write_text(
+                f'{{"access_token": "{saved}", "refresh_token": "r-old"}}'
+            )
+        settings = Settings(
+            soundcloud_client_id="id",
+            soundcloud_client_secret="secret",
+            data_dir=tmp_path,
+            login_wait_seconds=wait,
+        )
+        clock = [0.0]
+        client = SoundCloudClient(settings)
+        client.server = FakeCallbackServer(codes, clock)
+        client.opened = []
+        client.bound = []
+
+        def serve(address, handler):
+            """Hands out the fake server.
+
+            Args:
+                address: Host and port asked for.
+                handler: Request handler class.
+
+            Returns:
+                The fake server.
+            """
+            client.bound.append(address)
+            return client.server
+
+        answer = token or FakeTokenResponse(200, {"access_token": "a-new", "refresh_token": "r-new"})
+        monkeypatch.setattr(soundcloud, "HTTPServer", serve)
+        monkeypatch.setattr(soundcloud.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(soundcloud.webbrowser, "open", client.opened.append)
+        monkeypatch.setattr(client._http_client, "post", lambda url, data: answer)
+        monkeypatch.setattr(OAuthCallbackHandler, "authorization_code", None)
+        return client
+
+    @pytest.mark.parametrize("codes", [["c"], [None, "c"], [None, None, "c"]])
+    def test_approval_saves_a_private_login(self, tmp_path, monkeypatch, codes):
+        """An approved page yields a saved login only the user can read."""
+        client = self._client(tmp_path, monkeypatch, codes)
+        client.authenticate()
+        saved = tmp_path / ".soundcloud_token.json"
+        assert '"a-new"' in saved.read_text()
+        assert saved.stat().st_mode & 0o777 == 0o600
+        assert len(client.opened) == 1
+        assert client.bound == [("localhost", 8889)]
+        assert len(client.server.timeouts) == len(codes)
+        assert client.server.closed
+        assert OAuthCallbackHandler.authorization_code is None
+
+    @pytest.mark.parametrize("wait", [1, 5, 600])
+    def test_unanswered_page_times_out_after_the_configured_wait(self, tmp_path, monkeypatch, wait):
+        """Nobody approving ends with a plain message, and the saved login stays."""
+        client = self._client(tmp_path, monkeypatch, [], wait=wait, saved="a-old")
+        with pytest.raises(LoginTimeoutError) as caught:
+            client.login()
+        assert isinstance(caught.value, ReauthRequiredError)
+        assert f"{wait} seconds" in str(caught.value)
+        assert "song-automations login soundcloud" in str(caught.value)
+        assert client.server.timeouts[0] == wait
+        assert len(client.server.timeouts) == wait
+        assert client.server.closed
+        assert '"a-old"' in (tmp_path / ".soundcloud_token.json").read_text()
+
+    @pytest.mark.parametrize(
+        ("saved", "method", "pages_opened"),
+        [
+            ("a-old", "login", 1),
+            (None, "login", 1),
+            ("a-old", "authenticate", 0),
+            (None, "authenticate", 1),
+        ],
+    )
+    def test_login_always_asks_and_authenticate_only_when_needed(
+        self, tmp_path, monkeypatch, saved, method, pages_opened
+    ):
+        """The login command asks the browser again, a sync only when no login is saved."""
+        client = self._client(tmp_path, monkeypatch, ["c"], saved=saved)
+        getattr(client, method)()
+        assert len(client.opened) == pages_opened
+        assert client._access_token == ("a-new" if pages_opened else "a-old")
+
+    @pytest.mark.parametrize(
+        ("status", "body"),
+        [(401, {}), (400, {}), (500, {}), (200, {"refresh_token": "r"})],
+    )
+    def test_refused_code_is_explained(self, tmp_path, monkeypatch, status, body):
+        """A token endpoint that refuses becomes a message that names what to check."""
+        client = self._client(
+            tmp_path, monkeypatch, ["c"], token=FakeTokenResponse(status, body), saved="a-old"
+        )
+        with pytest.raises(LoginFailedError) as caught:
+            client.login()
+        assert "client secret" in str(caught.value)
+        assert '"a-old"' in (tmp_path / ".soundcloud_token.json").read_text()
+
+    @pytest.mark.parametrize("retry_after", [60, 3600])
+    def test_rate_limit_during_login_keeps_its_own_error(self, tmp_path, monkeypatch, retry_after):
+        """A limit on the token endpoint is still reported as a limit."""
+        answer = FakeTokenResponse(429, {})
+        answer.headers = {"Retry-After": str(retry_after)}
+        client = self._client(tmp_path, monkeypatch, ["c"], token=answer)
+        with pytest.raises(RateLimitError) as caught:
+            client.login()
+        assert caught.value.retry_after == retry_after
+
+    @pytest.mark.parametrize("reason", ["Address already in use", "Permission denied"])
+    def test_port_that_cannot_be_used_is_explained(self, tmp_path, monkeypatch, reason):
+        """A busy local port is reported plainly and no page is opened."""
+        client = self._client(tmp_path, monkeypatch, ["c"])
+
+        def refuse(address, handler):
+            """Stands in for a port that cannot be listened on.
+
+            Args:
+                address: Host and port asked for.
+                handler: Request handler class.
+
+            Raises:
+                OSError: Always.
+            """
+            raise OSError(reason)
+
+        monkeypatch.setattr(soundcloud, "HTTPServer", refuse)
+        with pytest.raises(LoginFailedError) as caught:
+            client.login()
+        assert reason in str(caught.value)
+        assert client.opened == []
