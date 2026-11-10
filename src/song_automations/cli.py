@@ -734,17 +734,14 @@ def restore(
         store = SnapshotStore(settings.snapshots_dir)
         try:
             for step in pending:
-                lost = apply_restore(step, clients[step.snapshot.platform], store)
+                outcome = apply_restore(step, clients[step.snapshot.platform], store)
                 label = PLATFORM_LABELS[step.snapshot.platform]
                 console.print(
                     f"[green]Restored[/green] {escape(step.snapshot.playlist_name)} on {label} "
-                    f"({len(step.snapshot.tracks) - len(lost)} of {len(step.snapshot.tracks)} tracks)"
+                    f"({len(step.snapshot.tracks) - len(outcome.lost)} of {len(step.snapshot.tracks)} tracks)"
                 )
-                if lost:
-                    console.print(
-                        f"[yellow]{len(lost)} saved tracks did not come back. "
-                        f"{label} most likely no longer has them.[/yellow]"
-                    )
+                for problem in outcome.problems:
+                    console.print(f"[yellow]{problem}[/yellow]")
         finally:
             if store.hint:
                 console.print(f"[dim]{escape(store.hint)}[/dim]")

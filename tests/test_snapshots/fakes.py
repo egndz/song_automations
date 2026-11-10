@@ -19,6 +19,8 @@ class FakePlatform:
         public: Whether the playlists are public, or None when they do not say.
         titled: Whether tracks carry a title and an artist.
         unavailable: Track ids SoundCloud silently refuses to put in a playlist.
+        ignores_empty: Whether SoundCloud silently keeps a playlist that is set to no tracks.
+        reverses: Whether SoundCloud stores a track list in reverse order.
     """
 
     def __init__(
@@ -28,12 +30,16 @@ class FakePlatform:
         public: bool | None = True,
         titled: bool = True,
         unavailable: tuple[str, ...] = (),
+        ignores_empty: bool = False,
+        reverses: bool = False,
     ) -> None:
         self.platform = platform
         self.playlists = {name: list(ids) for name, ids in playlists.items()}
         self.public = public
         self.titled = titled
         self.unavailable = set(unavailable)
+        self.ignores_empty = ignores_empty
+        self.reverses = reverses
         self.created: list[tuple[str, bool]] = []
         self.calls: list[str] = []
 
@@ -173,6 +179,7 @@ class FakePlatform:
         assert self.platform == "soundcloud"
         assert all(isinstance(track_id, int) for track_id in track_ids)
         self.calls.append("set_playlist_tracks")
-        self.playlists[self._name(playlist_id)] = [
-            str(track_id) for track_id in track_ids if str(track_id) not in self.unavailable
-        ]
+        if self.ignores_empty and not track_ids:
+            return
+        taken = [str(track_id) for track_id in track_ids if str(track_id) not in self.unavailable]
+        self.playlists[self._name(playlist_id)] = taken[::-1] if self.reverses else taken

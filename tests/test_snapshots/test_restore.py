@@ -5,6 +5,7 @@ import pytest
 from song_automations.snapshots import (
     BEFORE_DELETE,
     BEFORE_RESTORE,
+    RestoreOutcome,
     SavedTrack,
     SnapshotError,
     SnapshotStore,
@@ -86,9 +87,10 @@ def test_restore_puts_the_same_tracks_back_in_the_same_order(root, platform, sav
     """Whatever a run did to a playlist, a restore leaves it exactly as saved."""
     fake, snapshot = saved_then_changed(root, platform, saved, current)
     step = plan_restore(snapshot, fake)
-    lost = apply_restore(step, fake, SnapshotStore(root, RESTORE_RUN))
+    outcome = apply_restore(step, fake, SnapshotStore(root, RESTORE_RUN))
     assert fake.playlists[NAME] == saved
-    assert lost == []
+    assert outcome == RestoreOutcome()
+    assert outcome.problems == []
 
 
 @pytest.mark.parametrize("platform", ["spotify", "soundcloud"])
@@ -203,20 +205,26 @@ def test_restore_makes_only_the_calls_it_needs(root, platform, saved, current, c
 
 
 @pytest.mark.parametrize(
-    ("unavailable", "held", "lost"),
+    ("saved", "quirk", "held", "lost", "left_over", "problem"),
     [
-        ((), ["1", "2", "3"], []),
-        (("2",), ["1", "3"], ["2"]),
-        (("1", "3"), ["2"], ["1", "3"]),
+        (["1", "2", "3"], {}, ["1", "2", "3"], [], [], None),
+        (["1", "2", "3"], {"unavailable": ("2",)}, ["1", "3"], ["2"], [], "1 saved tracks did not come back"),
+        (["1", "2", "3"], {"unavailable": ("1", "3")}, ["2"], ["1", "3"], [], "2 saved tracks did not come back"),
+        ([], {"ignores_empty": True}, ["9"], [], ["9"], "1 tracks that were not in the snapshot are still there"),
+        (["1", "2", "3"], {"reverses": True}, ["3", "2", "1"], [], [], "not in the saved order"),
     ],
 )
-def test_soundcloud_tracks_that_do_not_come_back_are_reported(root, unavailable, held, lost):
-    """A track SoundCloud no longer takes is named instead of silently missing."""
-    fake, snapshot = saved_then_changed(root, "soundcloud", ["1", "2", "3"], ["9"], unavailable=unavailable)
+def test_soundcloud_playlist_that_differs_after_a_restore_is_reported(root, saved, quirk, held, lost, left_over, problem):
+    """Whatever SoundCloud silently does differently from what was asked is named afterwards."""
+    fake, snapshot = saved_then_changed(root, "soundcloud", saved, ["9"], **quirk)
     step = plan_restore(snapshot, fake)
-    missing = apply_restore(step, fake, SnapshotStore(root, RESTORE_RUN))
+    outcome = apply_restore(step, fake, SnapshotStore(root, RESTORE_RUN))
     assert fake.playlists[NAME] == held
-    assert [(track.id, track.title) for track in missing] == [(track_id, f"Title {track_id}") for track_id in lost]
+    assert [(track.id, track.title) for track in outcome.lost] == [(t, f"Title {t}") for t in lost]
+    assert [(track.id, track.title) for track in outcome.left_over] == [(t, f"Title {t}") for t in left_over]
+    assert outcome.in_order is (held == saved)
+    assert len(outcome.problems) == (0 if problem is None else 1)
+    assert problem is None or problem in outcome.problems[0]
 
 
 @pytest.mark.parametrize("platform", ["spotify", "soundcloud"])

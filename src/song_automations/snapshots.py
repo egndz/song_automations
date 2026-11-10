@@ -15,7 +15,7 @@ from collections import Counter
 from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -164,6 +164,40 @@ class RestoreStep:
         if not self.changes:
             return "unchanged"
         return "restore" if self.put_back or self.taken_out else "reorder"
+
+
+@dataclass(frozen=True)
+class RestoreOutcome:
+    """How a playlist compares with its snapshot after a restore.
+
+    Args:
+        lost: Saved tracks the platform did not take back.
+        left_over: Tracks still in the playlist that the snapshot does not hold.
+        in_order: Whether the playlist holds exactly the saved tracks in the saved order.
+    """
+
+    lost: list[SavedTrack] = field(default_factory=list)
+    left_over: list[SavedTrack] = field(default_factory=list)
+    in_order: bool = True
+
+    @property
+    def problems(self) -> list[str]:
+        """Words what did not go back as saved.
+
+        Returns:
+            One sentence per difference, empty when the playlist is exactly as saved.
+        """
+        found = []
+        if self.lost:
+            found.append(
+                f"{len(self.lost)} saved tracks did not come back, "
+                "most likely because the platform no longer has them."
+            )
+        if self.left_over:
+            found.append(f"{len(self.left_over)} tracks that were not in the snapshot are still there.")
+        if not found and not self.in_order:
+            found.append("The saved tracks are back, but not in the saved order.")
+        return found
 
 
 def name_of(playlist) -> str:
@@ -771,14 +805,16 @@ def change_lines(step: RestoreStep, limit: int = 10) -> list[str]:
     return lines
 
 
-def apply_restore(step: RestoreStep, client, store: SnapshotStore) -> list[SavedTrack]:
+def apply_restore(step: RestoreStep, client, store: SnapshotStore) -> RestoreOutcome:
     """Puts one playlist back as its snapshot saved it.
 
     A playlist that no longer exists is created under its saved name. What the
     playlist holds now is saved first, so the restore can be undone. Spotify
     takes tracks by address and SoundCloud takes the whole list of numeric ids,
     the same way a sync writes them. SoundCloud drops tracks that are gone
-    without saying so, so its playlist is read once more afterwards.
+    without saying so, so its playlist is read once more afterwards and
+    compared with the snapshot. Spotify either takes a change or raises, so
+    its playlist is not read again.
 
     Args:
         step: The planned restore.
@@ -786,7 +822,7 @@ def apply_restore(step: RestoreStep, client, store: SnapshotStore) -> list[Saved
         store: Store that saves the current state before it is replaced.
 
     Returns:
-        Saved tracks the platform did not take back, empty when all are back.
+        How the playlist differs from the snapshot afterwards, if at all.
 
     Raises:
         SnapshotError: When the current state could not be saved. The playlist
@@ -807,7 +843,11 @@ def apply_restore(step: RestoreStep, client, store: SnapshotStore) -> list[Saved
             client.remove_tracks_from_playlist(playlist.id, [uri(track_id) for track_id in step.remove])
         if step.add:
             client.add_tracks_to_playlist(playlist.id, [uri(track_id) for track_id in step.add])
-        return []
+        return RestoreOutcome()
     client.set_playlist_tracks(playlist.id, [int(track_id) for track_id in snapshot.track_ids])
     held = [saved_track(track) for track in client.get_playlist_tracks(playlist.id)]
-    return _lacking(snapshot.tracks, held)
+    return RestoreOutcome(
+        lost=_lacking(snapshot.tracks, held),
+        left_over=_lacking(held, snapshot.tracks),
+        in_order=[track.id for track in held] == snapshot.track_ids,
+    )
