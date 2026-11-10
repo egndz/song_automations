@@ -1,5 +1,6 @@
 """Spotify API client for playlist management and track search."""
 
+import json
 import logging
 import sys
 import time
@@ -10,6 +11,7 @@ from pathlib import Path
 import spotipy
 from rich.console import Console
 from rich.markup import escape
+from spotipy.cache_handler import CacheFileHandler
 from spotipy.exceptions import SpotifyException
 from spotipy.oauth2 import (
     SpotifyOAuth,
@@ -139,6 +141,30 @@ class SearchResult:
     is_verified: bool
 
 
+class PrivateCacheFileHandler(CacheFileHandler):
+    """Saves the Spotify login in a file only the user can read.
+
+    Every write of the login goes through here: the first login spotipy asks
+    for by itself, the login command and each refresh. The file is made
+    private before the login is written into it, whatever the spotipy version
+    does about permissions.
+    """
+
+    def save_token_to_cache(self, token_info: dict) -> None:
+        """Writes the login to the cache file and leaves the file at mode 600.
+
+        Args:
+            token_info: The login as spotipy holds it.
+        """
+        path = Path(self.cache_path)
+        try:
+            path.touch(mode=0o600, exist_ok=True)
+            path.chmod(0o600)
+            path.write_text(json.dumps(token_info, cls=self.encoder_cls), encoding="utf-8")
+        except OSError as error:
+            logger.warning("The Spotify login could not be saved to %s: %s", path, error)
+
+
 class TimedSpotifyOAuth(SpotifyOAuth):
     """Spotify login that stops waiting for the browser after a set time.
 
@@ -260,7 +286,7 @@ class SpotifyClient:
             client_secret=settings.spotify_client_secret,
             redirect_uri=settings.spotify_redirect_uri,
             scope=" ".join(self.SCOPES),
-            cache_path=str(self._cache_path),
+            cache_handler=PrivateCacheFileHandler(cache_path=str(self._cache_path)),
             open_browser=True,
         )
         self._client = spotipy.Spotify(

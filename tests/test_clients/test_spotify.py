@@ -1,5 +1,7 @@
 """Tests for Spotify client."""
 
+import json
+import os
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -9,6 +11,7 @@ from spotipy.oauth2 import SpotifyOauthError
 
 from song_automations.clients.spotify import (
     DEFAULT_RETRY_AFTER_SECONDS,
+    PrivateCacheFileHandler,
     SpotifyClient,
     SpotifyPlaylist,
     SpotifyTrack,
@@ -555,6 +558,79 @@ class TestSpotifyLogin:
         client = SpotifyClient(settings)
         assert isinstance(client._auth, TimedSpotifyOAuth)
         assert client._auth._wait_seconds == wait
+
+
+class FakeTokenAnswer:
+    """Answer of the Spotify token endpoint, given without any network."""
+
+    def raise_for_status(self) -> None:
+        """Reports no error."""
+
+    def json(self) -> dict:
+        """Hands out a new login.
+
+        Returns:
+            The token fields Spotify sends.
+        """
+        return {"access_token": "a-new", "refresh_token": "r-new", "expires_in": 3600, "token_type": "Bearer"}
+
+
+class TestSavedLoginStaysPrivate:
+    """Every way the Spotify login reaches the disk leaves it readable by the user only."""
+
+    @pytest.mark.parametrize(
+        ("way", "existing_mode", "umask"),
+        [
+            ("first login", None, 0o022),
+            ("first login", None, 0o000),
+            ("first login", 0o644, 0o022),
+            ("refresh", 0o644, 0o022),
+            ("refresh", 0o666, 0o000),
+            ("login command", None, 0o000),
+            ("login command", 0o644, 0o022),
+        ],
+    )
+    def test_login_is_private_before_and_after_it_is_written(self, tmp_path, monkeypatch, way, existing_mode, umask):
+        """The file is at mode 600 when the login goes in and stays there, whatever the umask."""
+        settings = Settings(spotify_client_id="id", spotify_client_secret="secret", data_dir=tmp_path)
+        client = SpotifyClient(settings)
+        cache = client._cache_path
+        seen = []
+
+        class RecordingEncoder(json.JSONEncoder):
+            """Encoder that notes how private the file is at the moment the login is written."""
+
+            def encode(self, value) -> str:
+                """Encodes the login.
+
+                Args:
+                    value: The login.
+
+                Returns:
+                    The login as JSON.
+                """
+                seen.append(cache.stat().st_mode & 0o777 if cache.exists() else None)
+                return super().encode(value)
+
+        assert isinstance(client._auth.cache_handler, PrivateCacheFileHandler)
+        client._auth.cache_handler.encoder_cls = RecordingEncoder
+        monkeypatch.setattr(client._auth._session, "post", lambda *args, **kwargs: FakeTokenAnswer())
+        monkeypatch.setattr(client._auth, "get_auth_response", lambda *args, **kwargs: "code")
+        if existing_mode is not None:
+            saved = {"access_token": "a-old", "refresh_token": "r-old", "expires_at": 0, "scope": client._auth.scope}
+            cache.write_text(json.dumps(saved) if way == "refresh" else "not a login")
+            cache.chmod(existing_mode)
+        previous = os.umask(umask)
+        try:
+            if way == "login command":
+                client.login()
+            else:
+                assert client._auth.get_access_token(as_dict=False) == "a-new"
+        finally:
+            os.umask(previous)
+        assert seen == [0o600]
+        assert cache.stat().st_mode & 0o777 == 0o600
+        assert json.loads(cache.read_text())["access_token"] == "a-new"
 
 
 class FakeCallbackServer:
