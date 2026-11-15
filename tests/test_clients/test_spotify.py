@@ -20,6 +20,7 @@ from song_automations.clients.spotify import (
     SpotifyTrack,
     TimedSpotifyOAuth,
     retry_after_seconds,
+    seed_login,
 )
 from song_automations.config import Settings
 from song_automations.errors import (
@@ -978,3 +979,66 @@ class TestSearchLedger:
         assert client._client.search.call_count == allowed
         assert stopped.value.resumes_at > time.time()
         assert "a run after" in str(stopped.value)
+
+
+class TestSeedLogin:
+    """Tests for using a login that was approved on another machine."""
+
+    @pytest.mark.parametrize(
+        "token, saved, expected",
+        [
+            ("refresh-me", None, "refresh-me"),
+            ("refresh-me", "approved here", "approved here"),
+            ("", None, None),
+            ("", "approved here", "approved here"),
+        ],
+        ids=["seeds", "keeps the saved login", "nothing to seed", "nothing to seed, login kept"],
+    )
+    def test_only_a_machine_without_a_login_is_seeded(self, tmp_path, token, saved, expected):
+        """The token becomes an expired login, and a login already saved is never replaced."""
+        cache = tmp_path / ".spotify_cache"
+        if saved:
+            cache.write_text(json.dumps({"refresh_token": saved}))
+
+        seeded = seed_login(cache, token, "playlist-read-private playlist-modify-private")
+
+        assert seeded == (expected == "refresh-me" and saved is None)
+        if expected is None:
+            assert not cache.exists()
+            return
+        login = json.loads(cache.read_text())
+        assert login["refresh_token"] == expected
+        if seeded:
+            assert cache.stat().st_mode & 0o777 == 0o600
+            assert login["expires_at"] == 0
+            assert login["scope"] == "playlist-read-private playlist-modify-private"
+
+    @pytest.mark.parametrize("token, calls", [("refresh-me", ["refresh-me"]), ("", [])])
+    def test_client_trades_the_seeded_token_for_a_login(self, tmp_path, monkeypatch, token, calls):
+        """With no saved login, the first call refreshes with the token instead of opening a browser."""
+        traded = []
+
+        def refresh(self, refresh_token):
+            traded.append(refresh_token)
+            return {
+                "access_token": "fresh",
+                "refresh_token": refresh_token,
+                "scope": self.scope,
+                "expires_at": 4102444800,
+            }
+
+        monkeypatch.setattr(TimedSpotifyOAuth, "refresh_access_token", refresh)
+        settings = Settings(
+            _env_file=None,
+            spotify_client_id="id",
+            spotify_client_secret="secret",
+            spotify_refresh_token=token,
+            unattended=True,
+            data_dir=tmp_path,
+        )
+
+        client = SpotifyClient(settings)
+        saved = client._auth.validate_token(client._auth.cache_handler.get_cached_token())
+
+        assert traded == calls
+        assert (saved or {}).get("access_token") == ("fresh" if token else None)

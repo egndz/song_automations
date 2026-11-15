@@ -47,6 +47,7 @@ from song_automations.snapshots import (
     shared_run,
     shared_targets,
 )
+from song_automations.state.bundle import StateBundleError, export_state, import_state
 from song_automations.state.tracker import StateTracker
 from song_automations.sync.engine import OperationType, SyncEngine, SyncResult
 from song_automations.want.sync import sync_want_playlist
@@ -63,6 +64,8 @@ app.add_typer(sync_app, name="sync")
 app.add_typer(report_app, name="report")
 app.add_typer(want_app, name="want")
 app.add_typer(schedule_app, name="schedule")
+state_app = typer.Typer(help="Carry what the tool remembers to another machine.")
+app.add_typer(state_app, name="state")
 
 console = Console()
 logger = logging.getLogger(__name__)
@@ -1062,6 +1065,37 @@ def cleanup_logs(
         console.print(f"[green]Deleted {deleted} log entries older than {days} days.[/green]")
     else:
         console.print(f"[dim]No log entries older than {days} days found.[/dim]")
+
+
+@state_app.command("export")
+def state_export(
+    target: Annotated[Path, typer.Argument(help="The bundle file to write.")],
+) -> None:
+    """Write the matches, playlist ids, search count and snapshots into one file. No login goes in."""
+    try:
+        exported = export_state(get_settings(), target)
+    except StateBundleError as error:
+        console.print(f"[red]{escape(str(error))}[/red]")
+        raise typer.Exit(1) from error
+    console.print(
+        f"[green]Exported.[/green] {exported.path} holds the state and "
+        f"{exported.snapshot_runs} snapshot run(s), {exported.size_bytes / 1024:.0f} KB."
+    )
+
+
+@state_app.command("import")
+def state_import(
+    source: Annotated[Path, typer.Argument(help="The bundle file to read.")],
+) -> None:
+    """Replace this machine's state with a bundle. The state that was here is renamed, not deleted."""
+    try:
+        imported = import_state(get_settings(), source)
+    except StateBundleError as error:
+        console.print(f"[red]{escape(str(error))}[/red]")
+        raise typer.Exit(1) from error
+    console.print(f"[green]Imported.[/green] {imported.snapshot_runs_added} snapshot run(s) added.")
+    if imported.set_aside:
+        console.print(f"[dim]The state that was here is now {imported.set_aside}[/dim]")
 
 
 if __name__ == "__main__":

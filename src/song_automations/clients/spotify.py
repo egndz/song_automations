@@ -249,6 +249,36 @@ class PrivateCacheFileHandler(CacheFileHandler):
             logger.warning("The Spotify login could not be saved to %s: %s", path, error)
 
 
+def seed_login(cache_path: Path, refresh_token: str, scope: str) -> bool:
+    """Saves a login made on another machine, when this machine has none.
+
+    A machine without a browser cannot approve the Spotify page. The refresh
+    token of a login approved elsewhere is enough: the saved login is marked
+    as expired, so the first call trades the token for a working one. A login
+    that is already saved is never replaced.
+
+    Args:
+        cache_path: The file the login is saved in.
+        refresh_token: The refresh token of the other machine's login, empty for none.
+        scope: The permissions that login was approved for, space separated.
+
+    Returns:
+        Whether a login was saved.
+    """
+    if not refresh_token or cache_path.exists():
+        return False
+    login = {
+        "access_token": "",
+        "token_type": "Bearer",
+        "expires_in": 0,
+        "expires_at": 0,
+        "refresh_token": refresh_token,
+        "scope": scope,
+    }
+    PrivateCacheFileHandler(cache_path=str(cache_path)).save_token_to_cache(login)
+    return cache_path.exists()
+
+
 class TimedSpotifyOAuth(SpotifyOAuth):
     """Spotify login that stops waiting for the browser after a set time.
 
@@ -362,6 +392,7 @@ class SpotifyClient:
         self._settings = settings
         self._cache_path = settings.data_dir / ".spotify_cache"
         settings.data_dir.mkdir(parents=True, exist_ok=True)
+        seed_login(self._cache_path, settings.spotify_refresh_token, " ".join(self.SCOPES))
 
         self._auth = TimedSpotifyOAuth(
             wait_seconds=settings.login_wait_seconds,
