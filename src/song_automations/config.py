@@ -57,6 +57,10 @@ class Settings(BaseSettings):
         default="http://localhost:8888/callback",
         description="Spotify OAuth redirect URI",
     )
+    spotify_refresh_token: str = Field(
+        default="",
+        description="Spotify login made on another machine, used when this one has no saved login and no browser",
+    )
 
     soundcloud_client_id: str = Field(
         default="",

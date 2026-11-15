@@ -110,6 +110,28 @@ If the project lives in Desktop, Documents or Downloads, macOS may ask once whet
 
 On Linux and other systems nothing is installed. `schedule install` prints the crontab line that does the same, for you to add with `crontab -e`.
 
+### Run it in the cloud, with the computer off
+
+A machine that starts empty every time, such as a cloud agent or a CI job, lacks two things your own computer has: a browser to approve the Spotify login in, and the memory of what earlier runs matched. `scripts/cloud_sync.sh` supplies both. It syncs Spotify only, because SoundCloud does not let this kind of account change playlists.
+
+**The login.** Set `SPOTIFY_REFRESH_TOKEN` to the `refresh_token` in `~/.song_automations/.spotify_cache` of a machine where `song-automations login spotify` was approved. A machine with no saved login uses it instead of opening a browser. A login that is already saved is never replaced.
+
+**The memory.** `song-automations state export FILE` packs the matches, the playlist ids, the count of recent Spotify searches and the playlist snapshots into one file of a few hundred KB. The cache of raw search answers, which is most of the database, is left out, and no login goes in. `song-automations state import FILE` unpacks it on another machine: the database that was there is renamed, not deleted, the search counts of both machines are combined, and snapshot runs are only added.
+
+**The script.** It keeps that file, encrypted with `SONG_AUTOMATIONS_STATE_KEY`, as the only file on the branch `sync-state`:
+
+```bash
+scripts/cloud_sync.sh push   # store this machine's state on the branch (do this once, from the machine that has synced before)
+scripts/cloud_sync.sh run    # on the cloud machine: pull the state, sync Spotify, store the state again
+scripts/cloud_sync.sh pull   # bring the cloud's state, with its snapshots, back to this machine
+```
+
+`run` stores the state even when the sync stopped early, and exits with the sync's exit code. It refuses to start when the branch or the key is missing, because a run without its memory would spend the day's searches on tracks that were matched long ago. After `pull`, `song-automations restore RUN_ID` undoes a cloud run like any other.
+
+The cloud machine needs these settings as environment variables: `DISCOGS_USER_TOKEN`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`, `SPOTIFY_REFRESH_TOKEN` and `SONG_AUTOMATIONS_STATE_KEY` (any long random text, for example from `openssl rand -hex 32`; a laptop reads it from `~/.song_automations/cloud.env`). It must be allowed to reach `api.spotify.com`, `accounts.spotify.com`, `api.discogs.com`, `api.deezer.com` and the Python package index.
+
+Once the cloud runs the sync, treat its state as the current one: run `scripts/cloud_sync.sh pull` before syncing by hand, and `push` afterwards.
+
 ### Want playlist
 
 Add any track to a playlist called `Want` on Spotify or SoundCloud. On the next sync (or with the command below) the tool finds the earliest vinyl pressing whose tracklist really holds that track and adds it to your Discogs wantlist. Each track is handled once; tracks with no verified vinyl are retried on later runs. Set `WANT_PLAYLIST_NAME` to use another playlist name.
