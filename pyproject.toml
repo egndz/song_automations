@@ -7,7 +7,7 @@ name = "song-automations"
 version = "0.1.0"
 description = "Sync Discogs collection folders to Spotify and SoundCloud playlists"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.11.4"
 license = "MIT"
 authors = [
     { name = "Egehan Gunduz" }

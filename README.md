@@ -114,7 +114,7 @@ On Linux and other systems nothing is installed. `schedule install` prints the c
 
 A machine that starts empty every time, such as a cloud agent or a CI job, lacks two things your own computer has: a browser to approve the Spotify login in, and the memory of what earlier runs matched. `scripts/cloud_sync.sh` supplies both. It syncs Spotify only, because SoundCloud does not let this kind of account change playlists.
 
-**The login.** Set `SPOTIFY_REFRESH_TOKEN` to the `refresh_token` in `~/.song_automations/.spotify_cache` of a machine where `song-automations login spotify` was approved. A machine with no saved login uses it instead of opening a browser. A login that is already saved is never replaced.
+**The login.** Set `SPOTIFY_REFRESH_TOKEN` to the `refresh_token` in `~/.song_automations/.spotify_cache` of a machine where `song-automations login spotify` was approved. A machine with no saved login uses it instead of opening a browser. A login that is already saved is never replaced. If the cloud run starts to stop with exit code 2, Spotify has retired that token: log in again on your own machine and copy the new `refresh_token` over.
 
 **The memory.** `song-automations state export FILE` packs the matches, the playlist ids, the count of recent Spotify searches and the playlist snapshots into one file of a few hundred KB. The cache of raw search answers, which is most of the database, is left out, and no login goes in. `song-automations state import FILE` unpacks it on another machine: the database that was there is renamed, not deleted, the search counts of both machines are combined, and snapshot runs are only added.
 
@@ -130,7 +130,7 @@ scripts/cloud_sync.sh pull   # bring the cloud's state, with its snapshots, back
 
 The cloud machine needs these settings as environment variables: `DISCOGS_USER_TOKEN`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `SPOTIFY_REDIRECT_URI`, `SPOTIFY_REFRESH_TOKEN` and `SONG_AUTOMATIONS_STATE_KEY` (any long random text, for example from `openssl rand -hex 32`; a laptop reads it from `~/.song_automations/cloud.env`). It must be allowed to reach `api.spotify.com`, `accounts.spotify.com`, `api.discogs.com`, `api.deezer.com` and the Python package index.
 
-Once the cloud runs the sync, treat its state as the current one: run `scripts/cloud_sync.sh pull` before syncing by hand, and `push` afterwards.
+Once the cloud runs the sync, treat its state as the current one: run `scripts/cloud_sync.sh pull` before syncing by hand, and `push` afterwards. Do that between cloud runs, not during one. A cloud run builds on the state it pulled, so if you push while it is running, its own push at the end is refused and that run's matches are searched for again next time.
 
 ### Want playlist
 

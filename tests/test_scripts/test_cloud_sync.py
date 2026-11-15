@@ -119,7 +119,8 @@ def fake_python(folder: Path) -> Path:
         "import os, sqlite3, sys; "
         "database = sqlite3.connect(os.path.join(os.environ['DATA_DIR'], 'state.db')); "
         "database.execute(\\\"INSERT INTO matched_tracks VALUES ('found by the sync')\\\"); "
-        "database.commit(); sys.exit(int(os.environ['SYNC_STATUS']))"
+        "database.commit(); database.close(); "
+        "os.system(os.environ.get('DURING_SYNC', '')); sys.exit(int(os.environ['SYNC_STATUS']))"
     )
     stand_in.write_text(
         "#!/bin/sh\n"
@@ -233,4 +234,45 @@ class TestRun:
         later = machines.data_dir("later")
         assert machines.run(later, "pull").returncode == 0
         assert matches(later) == ["found by the sync", "match 0"]
+        assert machines.commits() == 2
+
+    @pytest.mark.parametrize("quoting", ['{}', '"{}"', "'{}'", "{}\r"], ids=["plain", "double quotes", "single quotes", "windows line end"])
+    def test_key_file_may_quote_the_key(self, tmp_path, quoting):
+        """Quotes and a carriage return around the key in the file are not part of the key."""
+        machines = Machines(tmp_path)
+        key_file = tmp_path / "cloud.env"
+        key_file.write_text(f"SONG_AUTOMATIONS_STATE_KEY={quoting.format(KEY)}\n")
+        from_file = {"SONG_AUTOMATIONS_STATE_KEY": "", "SONG_AUTOMATIONS_CLOUD_ENV": str(key_file)}
+        assert machines.run(machines.data_dir("laptop", ("match 0",)), "push", **from_file).returncode == 0
+        cloud = machines.data_dir("cloud")
+
+        pulled = machines.run(cloud, "pull")
+
+        assert pulled.returncode == 0, pulled.stderr
+        assert matches(cloud) == ["match 0"]
+
+    @pytest.mark.parametrize("status", [0, 3])
+    def test_state_stored_by_another_machine_during_the_run_is_not_replaced(self, tmp_path, status):
+        """A push made while the sync was running wins; the run's own push is refused."""
+        machines = Machines(tmp_path)
+        assert machines.run(machines.data_dir("laptop", ("match 0",)), "push").returncode == 0
+        meanwhile = machines.data_dir("meanwhile", ("pushed meanwhile",))
+        other_push = (
+            f"DATA_DIR='{meanwhile}' SONG_AUTOMATIONS_PYTHON='{sys.executable}' bash '{SCRIPT}' push >/dev/null 2>&1"
+        )
+
+        ran = machines.run(
+            machines.data_dir("cloud"),
+            "run",
+            SONG_AUTOMATIONS_PYTHON=str(fake_python(tmp_path)),
+            SYNC_STATUS=str(status),
+            SYNC_ARGUMENTS=str(tmp_path / "arguments"),
+            DURING_SYNC=other_push,
+        )
+
+        assert ran.returncode != 0
+        assert "another machine stored its state" in ran.stderr
+        later = machines.data_dir("later")
+        assert machines.run(later, "pull").returncode == 0
+        assert matches(later) == ["pushed meanwhile"]
         assert machines.commits() == 2

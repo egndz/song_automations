@@ -11,6 +11,9 @@
 # machine and holds no login. When the variable is not set, the key is read
 # from ~/.song_automations/cloud.env.
 #
+# A run builds on the state it pulled. If another machine stores its state in
+# the meantime, the run's push is refused instead of replacing that state.
+#
 # Other variables, all optional:
 #   SONG_AUTOMATIONS_PYTHON        python that has song_automations installed
 #   SONG_AUTOMATIONS_STATE_BRANCH  branch holding the state (sync-state)
@@ -28,6 +31,7 @@ KEY_FILE="${SONG_AUTOMATIONS_CLOUD_ENV:-$HOME/.song_automations/cloud.env}"
 BUNDLE="state.tar.gz.enc"
 CIPHER=(-aes-256-cbc -pbkdf2 -iter 200000 -md sha256)
 PYTHON="${SONG_AUTOMATIONS_PYTHON:-}"
+PULLED=""
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -38,7 +42,7 @@ die() {
 
 load_key() {
     if [[ -z "${SONG_AUTOMATIONS_STATE_KEY:-}" && -f "$KEY_FILE" ]]; then
-        SONG_AUTOMATIONS_STATE_KEY="$(sed -n 's/^SONG_AUTOMATIONS_STATE_KEY=//p' "$KEY_FILE" | head -n 1)"
+        SONG_AUTOMATIONS_STATE_KEY="$(sed -n 's/^SONG_AUTOMATIONS_STATE_KEY=//p' "$KEY_FILE" | head -n 1 | tr -d "\r\"'")"
     fi
     [[ -n "${SONG_AUTOMATIONS_STATE_KEY:-}" ]] || die "SONG_AUTOMATIONS_STATE_KEY is not set, so the state cannot be read or written."
     export SONG_AUTOMATIONS_STATE_KEY
@@ -52,6 +56,7 @@ ensure_python() {
     if python3 -m venv "$WORK/venv" 2>/dev/null; then
         "$WORK/venv/bin/pip" install --quiet "$HERE"
     elif command -v uv >/dev/null; then
+        rm -rf "$WORK/venv"
         uv venv --quiet "$WORK/venv"
         uv pip install --quiet --python "$WORK/venv/bin/python" "$HERE"
     else
@@ -67,7 +72,8 @@ tool() {
 pull_state() {
     git -C "$REPO" fetch --quiet "$REMOTE" "$BRANCH" \
         || die "the branch '$BRANCH' is not on '$REMOTE'. Store the state from a machine that has it first: cloud_sync.sh push"
-    git -C "$REPO" show "FETCH_HEAD:$BUNDLE" > "$WORK/in.enc"
+    PULLED="$(git -C "$REPO" rev-parse FETCH_HEAD)"
+    git -C "$REPO" show "$PULLED:$BUNDLE" > "$WORK/in.enc"
     openssl enc -d "${CIPHER[@]}" -pass env:SONG_AUTOMATIONS_STATE_KEY -in "$WORK/in.enc" -out "$WORK/in.tar.gz" 2>/dev/null \
         || die "the state on '$BRANCH' could not be decrypted. SONG_AUTOMATIONS_STATE_KEY is not the key it was stored with."
     tool state import "$WORK/in.tar.gz"
@@ -78,7 +84,9 @@ push_state() {
     openssl enc "${CIPHER[@]}" -salt -pass env:SONG_AUTOMATIONS_STATE_KEY -in "$WORK/out.tar.gz" -out "$WORK/$BUNDLE"
     local blob tree commit
     local parent=()
-    if git -C "$REPO" fetch --quiet "$REMOTE" "$BRANCH" 2>/dev/null; then
+    if [[ -n "$PULLED" ]]; then
+        parent=(-p "$PULLED")
+    elif git -C "$REPO" fetch --quiet "$REMOTE" "$BRANCH" 2>/dev/null; then
         parent=(-p "$(git -C "$REPO" rev-parse FETCH_HEAD)")
     fi
     blob="$(git -C "$REPO" hash-object -w "$WORK/$BUNDLE")"
@@ -91,7 +99,7 @@ push_state() {
         git -C "$REPO" commit-tree "$tree" ${parent[@]+"${parent[@]}"} -m "State after the sync of $(date -u +%Y-%m-%dT%H:%MZ)"
     )"
     git -C "$REPO" push --quiet "$REMOTE" "$commit:refs/heads/$BRANCH" \
-        || die "the state could not be pushed to '$BRANCH'. This run's matches are not stored, so the next run repeats its searches."
+        || die "the state could not be pushed to '$BRANCH'. Either pushing is not allowed, or another machine stored its state after this one pulled. This run's matches are not stored, so the next run repeats its searches."
     echo "cloud_sync: state stored on $REMOTE/$BRANCH"
 }
 

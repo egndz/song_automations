@@ -27,6 +27,7 @@ SNAPSHOTS_MEMBER = "snapshots"
 DISPOSABLE_TABLES = ("search_cache",)
 SIDECAR_SUFFIXES = ("-wal", "-shm")
 ASIDE_STAMP = "%Y%m%d-%H%M%S"
+STAGED_SUFFIX = ".importing"
 
 
 class StateBundleError(RuntimeError):
@@ -100,7 +101,9 @@ def export_state(settings: Settings, target: Path) -> ExportedState:
 def import_state(settings: Settings, source: Path) -> ImportedState:
     """Replaces this machine's state with the state in a bundle.
 
-    Nothing is deleted. The database that was here is renamed, the count of
+    Nothing is deleted. The new database is copied next to the old one before
+    the old one is renamed, so a full disk cannot leave the machine without
+    either. The database that was here is renamed, the count of
     Spotify searches becomes the union of both machines' counts, because both
     spend the same allowance, and snapshot runs are only ever added.
 
@@ -121,8 +124,10 @@ def import_state(settings: Settings, source: Path) -> ImportedState:
         if not database.is_file():
             raise StateBundleError(f"{source} holds no {DATABASE_MEMBER}, so it is not a state bundle.")
         settings.ensure_directories()
+        staged = settings.db_path.with_name(settings.db_path.name + STAGED_SUFFIX)
+        shutil.copyfile(database, staged)
         set_aside = _set_aside(settings.db_path)
-        shutil.move(str(database), settings.db_path)
+        staged.replace(settings.db_path)
         _merge_ledger(unpacked / LEDGER_MEMBER, settings.data_dir / LEDGER_MEMBER)
         added = _add_snapshot_runs(unpacked / SNAPSHOTS_MEMBER, settings.snapshots_dir)
     return ImportedState(set_aside=set_aside, snapshot_runs_added=added)
@@ -135,7 +140,7 @@ def _copy_without_caches(source: Path, target: Path) -> None:
         source: The live database, which is only read.
         target: The copy to write.
     """
-    live = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+    live = sqlite3.connect(f"{source.resolve().as_uri()}?mode=ro", uri=True)
     copy = sqlite3.connect(target)
     try:
         live.backup(copy)
