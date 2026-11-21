@@ -101,6 +101,59 @@ class FakeClient:
         """
         self.playlists[playlist_id] += [uri.rsplit(":", 1)[-1] for uri in uris]
 
+    def remove_tracks_from_playlist(self, playlist_id, uris):
+        """Removes tracks.
+
+        Args:
+            playlist_id: Playlist id.
+            uris: Track uris.
+        """
+        gone = {uri.rsplit(":", 1)[-1] for uri in uris}
+        self.playlists[playlist_id] = [t for t in self.playlists[playlist_id] if t not in gone]
+
+
+class HeldClient(FakeClient):
+    """Client whose playlist tracks carry a name and a length.
+
+    Args:
+        held: Tracks of the playlist "Set - x" as (id, name, length).
+    """
+
+    def __init__(self, held) -> None:
+        super().__init__({"Set - x": [track_id for track_id, _, _ in held]})
+        self.details = {track_id: (name, ms) for track_id, name, ms in held}
+
+    def get_playlist_tracks(self, playlist_id):
+        """Lists the tracks with their details.
+
+        Args:
+            playlist_id: Playlist id.
+
+        Returns:
+            Tracks.
+        """
+        return [
+            SimpleNamespace(id=track_id, name=self.details.get(track_id, ("", None))[0], duration_ms=self.details.get(track_id, ("", None))[1])
+            for track_id in self.playlists[playlist_id]
+        ]
+
+
+class FakeSnapshots:
+    """Snapshot store that remembers what it was asked to save."""
+
+    def __init__(self) -> None:
+        self.saved = []
+
+    def save(self, platform, playlist, tracks):
+        """Saves a playlist.
+
+        Args:
+            platform: Platform name.
+            playlist: Playlist.
+            tracks: Tracks it held.
+        """
+        self.saved.append((platform, playlist.id, [str(track.id) for track in tracks]))
+
 
 def item(id, name, artist, isrc="", ms=200000):
     """Builds a raw Spotify track.
@@ -237,3 +290,49 @@ def test_nothing_found_creates_no_playlist():
     result = sync_setlist(client, FakeSearcher({}), SET, "Set - x")
     assert client.playlists == {}
     assert (result.created, result.added) == (False, 0)
+
+
+@pytest.mark.parametrize(
+    ("held", "added"),
+    [
+        (("other_copy", "Glue", 200000), 0),
+        (("other_copy", "Glue - Original Mix", 201500), 0),
+        (("other_copy", "Glue", 300000), 1),
+        (("other_copy", "Glue - Dub", 200000), 1),
+        (("other_copy", "Something Else", 200000), 1),
+        (("other_copy", "Glue", None), 1),
+        (("glue", "", None), 0),
+    ],
+)
+def test_another_copy_of_a_held_track_is_not_added_again(held, added):
+    """A held track with the same title and length is the same recording under another id."""
+    client = HeldClient([held])
+    result = sync_setlist(client, FakeSearcher(WRITTEN), [SetTrack("Bicep", "Glue")], "Set - x")
+    assert result.added == added
+    assert len(client.playlists["Set - x"]) == 1 + added
+
+
+@pytest.mark.parametrize(
+    ("held", "dry_run", "after", "added", "removed", "saved"),
+    [
+        (["kno", "old", "glue"], False, ["glue", "kno", "arch"], 1, 1, True),
+        (["arch", "kno", "glue"], False, ["glue", "kno", "arch"], 0, 0, True),
+        (["glue", "kno", "arch"], False, ["glue", "kno", "arch"], 0, 0, False),
+        (["kno", "old", "glue"], True, ["kno", "old", "glue"], 1, 1, False),
+    ],
+)
+def test_replace_makes_the_playlist_the_set_in_set_order(held, dry_run, after, added, removed, saved):
+    """What the playlist held is saved before it changes, and an identical playlist is left alone."""
+    client, snapshots = FakeClient({"Set - x": list(held)}), FakeSnapshots()
+    result = sync_setlist(client, FakeSearcher(WRITTEN), SET, "Set - x", dry_run=dry_run, replace=True, snapshots=snapshots)
+    assert client.playlists["Set - x"] == after
+    assert (result.added, result.removed) == (added, removed)
+    assert snapshots.saved == ([("spotify", "Set - x", held)] if saved else [])
+
+
+@pytest.mark.parametrize(("catalogue", "held", "after"), [({}, ["old"], ["old"]), (WRITTEN, None, ["glue", "kno", "arch"])])
+def test_replace_never_empties_a_playlist_and_creates_a_missing_one(catalogue, held, after):
+    """With nothing found the playlist is untouched, and without a playlist a replace is a plain run."""
+    client = FakeClient({} if held is None else {"Set - x": list(held)})
+    sync_setlist(client, FakeSearcher(catalogue), SET, "Set - x", replace=True, snapshots=FakeSnapshots())
+    assert client.playlists["Set - x"] == after

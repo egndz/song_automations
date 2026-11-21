@@ -383,6 +383,13 @@ def setlist(
         bool,
         typer.Option("--dry-run", "-n", help="Show what would be added without adding it."),
     ] = False,
+    replace: Annotated[
+        bool,
+        typer.Option(
+            "--replace",
+            help="Make an existing playlist hold exactly this set, in set order. What it held is saved first.",
+        ),
+    ] = False,
 ) -> None:
     """Make a Spotify playlist from the tracklist of a DJ set video."""
     settings = _init_settings()
@@ -412,7 +419,10 @@ def setlist(
     with _friendly_errors(settings):
         client = SpotifyClient(settings)
         searcher = SpotifySearcher(client, StateTracker(settings.db_path))
-        result = sync_setlist(client, searcher, tracks, playlist_name, description, dry_run, recognised)
+        snapshots = SnapshotStore(settings.snapshots_dir, runs_kept=settings.snapshot_runs_kept)
+        result = sync_setlist(
+            client, searcher, tracks, playlist_name, description, dry_run, recognised, replace, snapshots
+        )
     console.print(_setlist_table(result))
     found = sum(row.match is not None for row in result.rows)
     console.print(f"{found} of {len(result.rows)} tracks found on Spotify.")
@@ -424,6 +434,12 @@ def setlist(
         f"{result.added} {verb} {kind} '{escape(result.playlist_name)}', "
         f"{result.present} already there."
     )
+    if replace and not result.created:
+        taken = "would be taken out" if dry_run else "taken out"
+        console.print(f"{result.removed} {taken}, and the playlist follows the order of the set.")
+    hint = snapshots.hint
+    if hint:
+        console.print(hint)
 
 
 @app.command("login")

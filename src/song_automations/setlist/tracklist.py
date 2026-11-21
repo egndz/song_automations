@@ -35,6 +35,7 @@ NUMBER = re.compile(r"^\s*#?\d{1,3}\s*[.)\]:]+\s*")
 TRAILING_NOTE = re.compile(r"\s*[\[{][^\[\]{}]*[\]}]\s*$")
 PIPE = re.compile(r"\s*\|{1,2}\s*")
 DASH = re.compile(r"\s+[-–—~]+\s+|\s*[–—]\s*")
+CREDIT = re.compile(r"^(.+)\s+by\s+(.+)$", re.IGNORECASE)
 UNKNOWN = re.compile(r"^(?:id|ids|unknown|unreleased|tba|\?+)$", re.IGNORECASE)
 QUOTES = " \"'“”‘’"
 
@@ -96,15 +97,17 @@ def _seconds(found: re.Match) -> int:
     return int(hours or 0) * 3600 + int(minutes) * 60 + int(seconds)
 
 
-def parse_line(text: str) -> SetTrack | None:
+def parse_line(text: str, credited: bool = False) -> SetTrack | None:
     """Reads one line as a track.
 
     The time and the running number are taken off the front, notes in square
     brackets such as the tempo or the label off the end, and the rest is split
-    into its first two fields.
+    into its first two fields. A tracklist written as "Title by Artist" is
+    split at its last "by" instead.
 
     Args:
         text: Line of a description, or the title of a chapter.
+        credited: Whether the line is read as "Title by Artist".
 
     Returns:
         The track, or None when the line is a link, is too long to be a
@@ -129,11 +132,48 @@ def parse_line(text: str) -> SetTrack | None:
     if found:
         starts_at = _seconds(found) if starts_at is None else starts_at
         rest = rest[: found.start()]
-    fields = PIPE.split(rest) if "|" in rest else DASH.split(rest, maxsplit=1)
+    if credited:
+        found = CREDIT.match(rest.strip())
+        fields = [found[2], found[1]] if found else []
+    else:
+        fields = PIPE.split(rest) if "|" in rest else DASH.split(rest, maxsplit=1)
     fields = [part.strip(QUOTES) for part in fields if part.strip(QUOTES)]
     if len(fields) < 2 or UNKNOWN.match(fields[0]) or UNKNOWN.match(fields[1]):
         return None
     return SetTrack(fields[0], fields[1], starts_at, numbered)
+
+
+def _read(texts: Sequence[str], starts: Sequence[int | None], credited: bool) -> list[SetTrack]:
+    """Reads lines in one layout.
+
+    Args:
+        texts: Lines of a description, or chapter titles.
+        starts: Start of each line when the line itself gives no time, such as
+            the start of a chapter. None leaves the time to the line.
+        credited: Whether the lines are read as "Title by Artist".
+
+    Returns:
+        The lines that read as a track.
+    """
+    tracks = []
+    for text, start in zip(texts, starts, strict=True):
+        track = parse_line(text, credited)
+        if track:
+            tracks.append(track if start is None else replace(track, starts_at=start))
+    return tracks
+
+
+def _fuller(dashed: list[SetTrack], credited: list[SetTrack]) -> list[SetTrack]:
+    """Picks the layout that reads more lines as tracks.
+
+    Args:
+        dashed: Tracks read as "Artist - Title".
+        credited: Tracks read as "Title by Artist".
+
+    Returns:
+        The longer list, the dashed one when they are equal.
+    """
+    return credited if len(credited) > len(dashed) else dashed
 
 
 def parse_tracklist(
@@ -143,7 +183,9 @@ def parse_tracklist(
 
     Lines with a time are trusted first, then the chapters of the video, then
     numbered lines. Other lines with a dash are mostly links and credits, so
-    they only count in a file the user wrote the tracklist in.
+    they only count in a file the user wrote the tracklist in. Each of them is
+    read as "Artist - Title" and as "Title by Artist", and the layout that
+    fits more lines is used.
 
     Args:
         description: Description of the video, or the text of a file.
@@ -153,21 +195,26 @@ def parse_tracklist(
     Returns:
         The tracks in set order, empty when no tracklist was found.
     """
-    lines = [track for line in description.splitlines() if (track := parse_line(line))]
-    timed = [track for track in lines if track.starts_at is not None]
+    lines = description.splitlines()
+    unset = [None] * len(lines)
+    dashed, credited = _read(lines, unset, False), _read(lines, unset, True)
+    timed = _fuller(
+        [track for track in dashed if track.starts_at is not None],
+        [track for track in credited if track.starts_at is not None],
+    )
     if len(timed) >= MIN_TRACKS:
         return timed
-    chaptered = [
-        replace(track, starts_at=int(chapter.get("start_time") or 0))
-        for chapter in chapters
-        if (track := parse_line(str(chapter.get("title") or "")))
-    ]
+    titles = [str(chapter.get("title") or "") for chapter in chapters]
+    starts = [int(chapter.get("start_time") or 0) for chapter in chapters]
+    chaptered = _fuller(_read(titles, starts, False), _read(titles, starts, True))
     if len(chaptered) >= MIN_TRACKS:
         return chaptered
-    numbered = [track for track in lines if track.numbered]
+    numbered = _fuller(
+        [track for track in dashed if track.numbered], [track for track in credited if track.numbered]
+    )
     if len(numbered) >= MIN_TRACKS:
         return numbered
-    return lines if every_line else []
+    return _fuller(dashed, credited) if every_line else []
 
 
 def _downloader() -> list[str]:

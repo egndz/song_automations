@@ -746,11 +746,27 @@ def evaluate(source: SourceTrack, candidate: Candidate) -> Match | Rejection:
     )
 
 
-def _rank(match: Match) -> tuple:
+def _title_distance(source: SourceTrack, candidate: Candidate) -> int:
+    """Counts the words by which the title of a candidate differs from the source.
+
+    Args:
+        source: Source track.
+        candidate: Candidate track.
+
+    Returns:
+        Number of words only one of the two titles has.
+    """
+    return len(set(clean(source.title).split()) ^ set(clean(candidate.raw_title).split()))
+
+
+def _rank(match: Match, title_distance: int = 0) -> tuple:
     """Builds the sort key for accepted candidates.
 
     Args:
         match: Accepted candidate.
+        title_distance: Words by which the title differs from the source. It
+            settles what would otherwise be a tie, such as the extended and
+            the radio cut of one remix when no length tells them apart.
 
     Returns:
         Tuple that sorts the best candidate first, ending in the id so the
@@ -765,6 +781,7 @@ def _rank(match: Match) -> tuple:
         match.reading.kind in {"label", "loose"},
         delta // 5000,
         -match.candidate.plays,
+        title_distance,
         match.candidate.id,
     )
 
@@ -788,7 +805,7 @@ def decide(source: SourceTrack, candidates: Iterable[Candidate]) -> Decision:
             accepted.append(outcome)
         else:
             decision.rejections.append(outcome)
-    accepted.sort(key=_rank)
+    accepted.sort(key=lambda match: _rank(match, _title_distance(source, match.candidate)))
     if accepted:
         decision.match = accepted[0]
         decision.alternatives = accepted[1:]
