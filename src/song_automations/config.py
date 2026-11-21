@@ -23,6 +23,7 @@ class Settings(BaseSettings):
         data_dir: Directory for storing SQLite database and cache files.
         want_playlist_name: Playlist whose tracks go on the Discogs wantlist.
         playlist_prefix: Prefix for created playlists.
+        setlist_playlist_prefix: Prefix for playlists made from the tracklist of a video.
         soundcloud_gated_tracks: Whether SoundCloud tracks the account cannot play in full may match.
         spotify_search_budget: Spotify searches allowed in any 23 hours.
         login_wait_seconds: Seconds to wait for a login page to be approved in the browser.
@@ -88,6 +89,11 @@ class Settings(BaseSettings):
     playlist_prefix: str = Field(
         default="Discogs - ",
         description="Prefix for created playlists",
+    )
+
+    setlist_playlist_prefix: str = Field(
+        default="Set - ",
+        description="Prefix for playlists made from the tracklist of a video",
     )
 
     soundcloud_gated_tracks: bool = Field(

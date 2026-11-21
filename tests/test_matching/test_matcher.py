@@ -14,6 +14,7 @@ from song_automations.matching.matcher import (
     clean,
     decide,
     evaluate,
+    is_repeat,
     parse_title,
     soundcloud_candidate,
     soundcloud_readings,
@@ -215,6 +216,7 @@ def test_featuring_splits_a_credit_only_as_a_whole_word(credit, names):
     [
         ("Track (Hardfloor Remix)", "track", ["hardfloor remix"]),
         ("Track - Radio Edit", "track", ["radio edit"]),
+        ("Track (Solomun Vox)", "track", ["solomun vox"]),
         ("Track (Original Mix)", "track", []),
         ("Track [LG001]", "track", []),
         ("Track Pt. 2", "track part 2", []),
@@ -285,6 +287,57 @@ def test_assign_release_leaves_a_track_empty_rather_than_repeat():
     candidate = [soundcloud("Bicep - Glue", "Bicep", id="only")]
     decisions = [decide(SourceTrack(("Bicep",), "Glue"), candidate), decide(SourceTrack(("Bicep",), "Glue (Dub)"), candidate)]
     assert [m.candidate.id if m else None for m in assign_release(decisions)] == ["only", None]
+
+
+def coded(id: str, title: str, isrc: str, ms: int) -> Candidate:
+    """Builds a Spotify style candidate that carries a recording code.
+
+    Args:
+        id: Track id.
+        title: Track title.
+        isrc: Recording code.
+        ms: Duration.
+
+    Returns:
+        The candidate.
+    """
+    return spotify_candidate(
+        {"id": id, "name": title, "artists": [{"name": "Bicep"}], "duration_ms": ms, "external_ids": {"isrc": isrc}}
+    )
+
+
+@pytest.mark.parametrize(
+    ("second", "assigned"),
+    [
+        (coded("album", "Glue", "GB1", 200_000), ["single", None]),
+        (coded("album", "Glue", "GB1", 215_000), ["single", None]),
+        (coded("long", "Glue", "GB1", 400_000), ["single", "long"]),
+        (coded("other", "Glue", "GB2", 200_000), ["single", "other"]),
+    ],
+)
+def test_assign_release_counts_a_second_id_of_a_recording_as_taken(second, assigned):
+    """A remix falling back to the original never gets the same recording under another id."""
+    first = coded("single", "Glue", "GB1", 200_000)
+    decisions = [decide(SourceTrack(("Bicep",), "Glue"), [first]), decide(SourceTrack(("Bicep",), "Glue (Dub)"), [second])]
+    assert [m.candidate.id if m else None for m in assign_release(decisions)] == assigned
+
+
+@pytest.mark.parametrize(
+    ("isrc", "ms", "chosen", "expected"),
+    [
+        ("GB1", 200_000, {"GB1": [200_000]}, True),
+        ("GB1", None, {"GB1": [200_000]}, True),
+        ("GB1", 200_000, {"GB1": [None]}, True),
+        ("GB1", 200_000, {"GB1": [400_000]}, False),
+        ("GB1", 200_000, {"GB1": [400_000, 210_000]}, True),
+        ("GB1", 200_000, {"GB2": [200_000]}, False),
+        ("", 200_000, {"": [200_000]}, False),
+        (None, 200_000, {"GB1": [200_000]}, False),
+    ],
+)
+def test_is_repeat_needs_the_code_and_a_length_that_fits(isrc, ms, chosen, expected):
+    """Labels reuse a code for another cut, so a different length sets two recordings apart."""
+    assert is_repeat(isrc, ms, chosen) is expected
 
 
 @pytest.mark.parametrize(

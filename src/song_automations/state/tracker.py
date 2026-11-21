@@ -848,6 +848,27 @@ class StateTracker:
             ).fetchone()
         return (row[0], row[1]) if row else None
 
+    def get_matched_recordings(self, destination: Destination) -> dict[str, tuple[str, int | None]]:
+        """Reads the recording code and the length of every matched platform track.
+
+        Args:
+            destination: Platform the matches are on.
+
+        Returns:
+            The code and the length in milliseconds by platform track id, for
+            the matches the platform lists a code for.
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT destination_track_id, matched_isrc, matched_duration_ms FROM matched_tracks
+                WHERE destination = ? AND destination_track_id IS NOT NULL
+                  AND matched_isrc IS NOT NULL AND matched_isrc != ''
+                """,
+                (destination,),
+            ).fetchall()
+        return {str(row[0]): (row[1], row[2]) for row in rows}
+
     def save_missing_track(
         self,
         discogs_release_id: int,

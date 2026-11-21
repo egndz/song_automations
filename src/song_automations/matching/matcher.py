@@ -47,6 +47,7 @@ VERSION_WORDS = {
     "club",
     "acapella",
     "vocal",
+    "vox",
     "dubmix",
     "remake",
     "remodel",
@@ -794,11 +795,38 @@ def decide(source: SourceTrack, candidates: Iterable[Candidate]) -> Decision:
     return decision
 
 
+def is_repeat(
+    isrc: str | None, duration_ms: int | None, chosen: Mapping[str, Sequence[int | None]]
+) -> bool:
+    """Checks whether a recording is already among the chosen ones.
+
+    A platform lists one recording under several ids, on the single, the album
+    and a compilation. They share the recording code. Labels also reuse a code
+    for a different cut, so the code only counts together with the length.
+
+    Args:
+        isrc: Recording code of the candidate, empty or None when it has none.
+        duration_ms: Length of the candidate, None when unknown.
+        chosen: Lengths of the recordings chosen so far, by recording code.
+
+    Returns:
+        True when a chosen recording has the same code and no length sets the
+        two apart.
+    """
+    if not isrc:
+        return False
+    return any(
+        not duration_ms or not other or abs(duration_ms - other) <= DURATION_TOLERANCE_MS
+        for other in chosen.get(isrc, ())
+    )
+
+
 def assign_release(decisions: Sequence[Decision]) -> list[Match | None]:
-    """Gives each track of a release its own candidate where possible.
+    """Gives each track of a release its own recording where possible.
 
     The best evidence chooses first, so an exact mix keeps its upload and a
     track that only reached it through fallback moves to its next alternative.
+    A second id of a recording that is already given out counts as taken too.
 
     Args:
         decisions: Decisions for the tracks of one release, in track order.
@@ -811,15 +839,20 @@ def assign_release(decisions: Sequence[Decision]) -> list[Match | None]:
         key=lambda i: _rank(decisions[i].match) if decisions[i].match else (99,),
     )
     taken: set[str] = set()
+    recordings: dict[str, list[int | None]] = {}
     assigned: list[Match | None] = [None] * len(decisions)
     for index in order:
         decision = decisions[index]
         options = ([decision.match] if decision.match else []) + decision.alternatives
         for option in options:
-            if option.candidate.id not in taken:
-                assigned[index] = option
-                taken.add(option.candidate.id)
-                break
+            candidate = option.candidate
+            if candidate.id in taken or is_repeat(candidate.isrc, candidate.duration_ms, recordings):
+                continue
+            assigned[index] = option
+            taken.add(candidate.id)
+            if candidate.isrc:
+                recordings.setdefault(candidate.isrc, []).append(candidate.duration_ms)
+            break
     return assigned
 
 
