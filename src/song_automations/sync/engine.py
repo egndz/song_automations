@@ -16,7 +16,7 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from song_automations.clients.discogs import DiscogsClient, Folder, Release, Track
 from song_automations.config import Settings
 from song_automations.matching.isrc import IsrcFinder, with_recording_evidence
-from song_automations.matching.matcher import PLAYABLE, Match, SourceTrack, Tier
+from song_automations.matching.matcher import PLAYABLE, Match, SourceTrack, Tier, is_repeat
 from song_automations.matching.resolver import (
     SoundCloudSearcher,
     SpotifySearcher,
@@ -477,12 +477,35 @@ class SyncEngine:
             progress.remove_task(task)
 
         if playlist:
-            self._apply_playlist(playlist, list(desired), playlist_client, destination, dry_run, result)
+            chosen = self._without_repeats(list(desired), destination)
+            self._apply_playlist(playlist, chosen, playlist_client, destination, dry_run, result)
 
         if not dry_run:
             self._state.update_folder_releases(folder.id, [r.id for r in releases])
 
         return result
+
+    def _without_repeats(self, desired: list[str], destination: Destination) -> list[str]:
+        """Drops a second id of a recording the playlist already gets.
+
+        Args:
+            desired: Chosen ids in playlist order.
+            destination: Target platform.
+
+        Returns:
+            The ids without those that repeat an earlier recording.
+        """
+        recordings = self._state.get_matched_recordings(destination)
+        chosen: dict[str, list[int | None]] = {}
+        kept: list[str] = []
+        for track_id in desired:
+            isrc, duration_ms = recordings.get(track_id, ("", None))
+            if is_repeat(isrc, duration_ms, chosen):
+                continue
+            kept.append(track_id)
+            if isrc:
+                chosen.setdefault(isrc, []).append(duration_ms)
+        return kept
 
     def _make_searcher(self, playlist_client: PlaylistClient, destination: Destination):
         """Builds the searcher of a platform.

@@ -143,6 +143,24 @@ song-automations want sync --platform all
 
 During a sync the Want playlist is handled first, and a problem there never costs you the sync. If Discogs is down or answers with an error, the tool prints a yellow warning, skips the Want playlist for that run and syncs the folders as usual. Only an expired login, a rate limit or a used-up search budget stop the run, because the folder sync would hit the same wall. With `--platform all`, a platform that is stopped does not keep the other one from running.
 
+### Playlist from a DJ set video
+
+Give the tool the link of a DJ set on YouTube and it makes a Spotify playlist of the tracks played. It reads the tracklist the uploader wrote, from the timestamps in the description or from the chapters of the video. Nothing is downloaded but the page details, and no audio is analysed, so a video without a written tracklist gives nothing.
+
+```bash
+song-automations setlist "https://www.youtube.com/watch?v=VIDEO" --dry-run
+song-automations setlist "https://www.youtube.com/watch?v=VIDEO"
+song-automations setlist tracklist.txt --name "Sunday set"
+```
+
+- **Matching**: the same checks as the sync, so a track that is not on Spotify is listed as not found instead of being replaced by something similar. A set gives no track lengths, so the title, the artist and the version carry the decision.
+- **Tracklists written title first**: recognised on the first three tracks, at the cost of up to three extra searches.
+- **Cuts from mixed compilations**: Spotify lists tracks of DJ mix albums blended into their neighbours. The track's own release is used when Spotify has it under the same title, otherwise the cut is used and marked in the table.
+- **Playlist**: named `Set - <video title>` and private. Set `SETLIST_PLAYLIST_PREFIX` or pass `--name` to change the name. Tracks are only ever added, each recording once, so running a set again adds what was missing the first time and never removes anything.
+- **Tracklist file**: when the tracklist is somewhere else, such as a comment or a tracklist site, copy it into a text file with one `Artist - Title` per line and pass the file.
+- **Searches**: each track costs one Spotify search from the same daily allowance the sync uses.
+- **Requirement**: [yt-dlp](https://github.com/yt-dlp/yt-dlp) has to be installed (`brew install yt-dlp`). A tracklist file needs nothing.
+
 ### Undo a sync
 
 Before a sync changes or deletes a playlist, it saves what the playlist held: every track in order, with its title and artist. The snapshots are plain JSON files in `~/.song_automations/snapshots/<run>/<platform>/`, one per playlist, where the run is named after the time it started. A run that changes nothing saves nothing, and neither does a dry run. A sync that saved something ends with a line naming the run and the command that undoes it.
@@ -246,7 +264,7 @@ Matching works release by release and only accepts a candidate that passes every
 - **Unwanted uploads**: covers, karaoke, tributes, mashups, bootlegs, acoustic and instrumental versions, previews, reaction videos, live recordings and radio or TV sessions (KEXP, Tiny Desk, Maida Vale and the like) are rejected unless the Discogs title carries the same word. The word has to be there as a whole word, so a track called "Alive" does not excuse a live take, and words in the artist's own name never count against an upload. DJ sets, mixtapes, radio shows and uploads merely marked "live" are rejected too, except when their length is within 5 seconds of the Discogs length, because then the upload is the record itself on a channel with such a word in its title.
 - **Version**: the exact mix is preferred, then the original mix, then another mix of the same song. A mix with the wrong length drops to the lowest tier.
 - **Length**: an exact-version match must be within 20 seconds of the Discogs duration when both are known.
-- **No duplicates**: each streaming track is used once per playlist, and two tracks of one release never share one match. The same song on two of your records does share its streaming track.
+- **No duplicates**: each streaming track is used once per playlist, and two tracks of one release never share one match. The same song on two of your records does share its streaming track. A platform often lists one recording under several ids, on the single and on the album. Those count as one track when the recording code and the length agree.
 
 On Spotify the tool looks for the release as an album first, then runs one search per remaining track. On SoundCloud it also looks at sets and at the label's or artist's own account.
 

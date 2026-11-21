@@ -27,11 +27,15 @@ from song_automations.errors import (
 )
 from song_automations.logging import setup_logging
 from song_automations.matching.isrc import IsrcFinder
+from song_automations.matching.matcher import Tier
+from song_automations.matching.resolver import SpotifySearcher
 from song_automations.notify import notify_attention
 from song_automations.reports.audit import DISAGREEMENTS_NAME, run_audit
 from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
 from song_automations.schedule import schedule_app
+from song_automations.setlist.sync import SetlistResult, is_mixed_cut, sync_setlist
+from song_automations.setlist.tracklist import SetlistError, parse_tracklist, read_source
 from song_automations.snapshots import (
     RestoreStep,
     RestoreStoppedError,
@@ -326,6 +330,86 @@ def want_sync(
             exit_code = max(exit_code, stop.exit_code)
     if exit_code:
         raise typer.Exit(exit_code)
+
+
+SETLIST_NAME_LIMIT = 100
+SETLIST_NOTES = {Tier.ORIGINAL: "original mix", Tier.OTHER_MIX: "another mix"}
+
+
+def _setlist_table(result: SetlistResult) -> Table:
+    """Lays out what was found for each track of a set.
+
+    Args:
+        result: Result of the run.
+
+    Returns:
+        The table.
+    """
+    table = Table(title=escape(result.playlist_name))
+    for heading in ("#", "At", "In the set", "On Spotify", "Note"):
+        table.add_column(heading)
+    for number, row in enumerate(result.rows, start=1):
+        at = row.track.starts_at
+        when = "" if at is None else f"{at // 3600}:{at % 3600 // 60:02d}:{at % 60:02d}"
+        if row.match is None:
+            found, note = "[dim]not found[/dim]", ""
+        else:
+            artists = ", ".join(row.match.reading.artists)
+            found = escape(f"{artists} - {row.match.candidate.raw_title}".strip(" -"))
+            notes = ["already in the list"] if row.repeat else []
+            notes += [SETLIST_NOTES[row.match.tier]] if row.match.tier in SETLIST_NOTES else []
+            notes += ["cut from a DJ mix"] if is_mixed_cut(row.match) else []
+            note = ", ".join(notes)
+        table.add_row(str(number), when, escape(f"{row.track.artist} - {row.track.title}"), found, note)
+    return table
+
+
+@app.command("setlist")
+def setlist(
+    source: Annotated[
+        str,
+        typer.Argument(help="Link to a video of a DJ set, or a text file holding a tracklist."),
+    ],
+    name: Annotated[
+        str | None,
+        typer.Option("--name", help="Playlist name. The default is the video title after the prefix."),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", "-n", help="Show what would be added without adding it."),
+    ] = False,
+) -> None:
+    """Make a Spotify playlist from the tracklist of a DJ set video."""
+    settings = _init_settings()
+    try:
+        video = read_source(source)
+    except SetlistError as error:
+        console.print(f"[red]{escape(str(error))}[/red]")
+        raise typer.Exit(1) from error
+    tracks = parse_tracklist(video.description, video.chapters, every_line=video.from_file)
+    if not tracks:
+        console.print(
+            "[yellow]No tracklist found in the description or the chapters. Copy the tracklist "
+            "into a text file, one 'Artist - Title' per line, and pass the file instead.[/yellow]"
+        )
+        raise typer.Exit(1)
+    playlist_name = (name or f"{settings.setlist_playlist_prefix}{video.title}")[:SETLIST_NAME_LIMIT]
+    description = f"Tracklist of {video.url}" if video.url else "Made from a tracklist"
+    with _friendly_errors(settings):
+        client = SpotifyClient(settings)
+        searcher = SpotifySearcher(client, StateTracker(settings.db_path))
+        result = sync_setlist(client, searcher, tracks, playlist_name, description, dry_run)
+    console.print(_setlist_table(result))
+    found = sum(row.match is not None for row in result.rows)
+    console.print(f"{found} of {len(result.rows)} tracks found on Spotify.")
+    if not found:
+        return
+    verb = "would be added to" if dry_run else "added to"
+    kind = "the new playlist" if result.created else "the playlist"
+    console.print(
+        f"{result.added} {verb} {kind} '{escape(result.playlist_name)}', "
+        f"{result.present} already there."
+    )
 
 
 @app.command("login")

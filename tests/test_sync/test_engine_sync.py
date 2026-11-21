@@ -418,6 +418,26 @@ class FakeFinder:
         return self.codes
 
 
+@pytest.mark.parametrize(
+    ("second_code", "second_ms", "expected"),
+    [("GB1", 200000, ["single"]), ("GB1", 400000, ["single", "album"]), ("GB2", 200000, ["single", "album"]), (None, 200000, ["single", "album"])],
+)
+def test_one_recording_under_two_ids_is_added_once(state, second_code, second_ms, expected):
+    """Decisions stored before the rule existed no longer put a recording in the playlist twice."""
+    discogs = FakeDiscogs({"Electro": [discogs_track("Glue", "A1"), discogs_track("Glue (Dub)", "A2")]})
+    map_folder(state, discogs, "Electro")
+    state.save_matched_track(
+        1, "A1", "Bicep", "Glue", "spotify", "single", 0.9, match_tier="exact", matched_duration_ms=200000, matched_isrc="GB1"
+    )
+    state.save_matched_track(
+        1, "A2", "Bicep", "Glue (Dub)", "spotify", "album", 0.7, match_tier="original",
+        matched_duration_ms=second_ms, matched_isrc=second_code,
+    )
+    spotify = FakeSpotify({"Discogs - Electro": []}, {})
+    run(state, discogs, spotify)
+    assert spotify.playlists["Discogs - Electro"] == expected
+
+
 def store_spotify_decision(state, outcome, title="Glue"):
     """Stores what Spotify answered for track A1 of release 1.
 

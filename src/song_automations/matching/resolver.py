@@ -344,6 +344,27 @@ def _is_settled(decision: Decision) -> bool:
     return bool(decision.match and decision.match.tier == Tier.EXACT)
 
 
+def resolve_track(searcher, source: SourceTrack, search_artist: str) -> Decision:
+    """Matches one track that belongs to no release, such as a track of a DJ set.
+
+    Args:
+        searcher: Platform searcher.
+        source: Track to find.
+        search_artist: Artist to search for.
+
+    Returns:
+        The decision, with the chosen match and the other accepted candidates.
+    """
+    seen: list[Candidate] = []
+    decision = Decision()
+    for query in searcher.track_queries(search_artist, source.title):
+        seen += searcher.search(query)
+        decision = decide(source, seen)
+        if _is_settled(decision):
+            break
+    return decision
+
+
 def resolve_release(
     searcher,
     sources: Sequence[SourceTrack],
