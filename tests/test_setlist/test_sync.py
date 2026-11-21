@@ -172,6 +172,23 @@ def test_the_release_is_preferred_over_its_cut_from_a_mix(wanted, titles, chosen
     assert matches[0].candidate.id == chosen
 
 
+@pytest.mark.parametrize(("order_known", "searches"), [(False, 7), (True, 4)])
+def test_a_source_that_names_artist_and_title_is_not_tried_turned_round(order_known, searches):
+    """Songs the platform names itself cost one search each, even when none is found."""
+    searcher = FakeSearcher({})
+    assert match_tracks(searcher, SET, order_known) == [None] * 4
+    assert len(searcher.searches) == searches
+
+
+@pytest.mark.parametrize(("album", "chosen"), [("Isles", "b_album"), ("", "a_single"), ("Something Else", "a_single")])
+def test_the_release_the_source_names_is_preferred(album, chosen):
+    """With the release known, the copy of the track on that release wins over the usual order."""
+    copies = [item("a_single", "Glue", "Bicep"), {**item("b_album", "Glue", "Bicep"), "album": {"name": "Isles"}}]
+    track = SetTrack("Bicep", "Glue", album=album)
+    matches = match_tracks(FakeSearcher({"Bicep|Glue": copies}), [track], order_known=True)
+    assert matches[0].candidate.id == chosen
+
+
 def test_wrong_artist_is_not_taken():
     """A track by someone else with the same title stays out."""
     searcher = FakeSearcher({"Bicep|Glue": [item("other", "Glue", "Somebody Else")]})

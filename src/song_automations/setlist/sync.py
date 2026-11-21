@@ -93,26 +93,31 @@ def _whole_track(decision: Decision) -> Match | None:
     return whole[0] if whole else best
 
 
-def _find(searcher, artist: str, title: str) -> Match | None:
+def _find(searcher, artist: str, title: str, album: str = "") -> Match | None:
     """Looks one track up.
 
-    A set gives no length and no release, so the version, the title and the
-    artist carry the decision. Uploads by strangers never count.
+    A set gives no length, so the version, the title and the artist carry the
+    decision. Uploads by strangers never count.
 
     Args:
         searcher: Platform searcher.
         artist: Artist credit.
         title: Track title.
+        album: Release the track is on, which is preferred when known.
 
     Returns:
         The chosen match, or None.
     """
-    source = SourceTrack(artists=split_artists(artist), title=title, fan_uploads=False)
+    source = SourceTrack(
+        artists=split_artists(artist), title=title, release_title=album, fan_uploads=False
+    )
     first = ARTIST_SEPARATOR.split(artist)[0].strip()
     return _whole_track(resolve_track(searcher, source, first or artist))
 
 
-def match_tracks(searcher, tracks: Sequence[SetTrack]) -> list[Match | None]:
+def match_tracks(
+    searcher, tracks: Sequence[SetTrack], order_known: bool = False
+) -> list[Match | None]:
     """Matches the tracks of a set.
 
     Most tracklists read artist then title, a few the other way round. The
@@ -123,10 +128,14 @@ def match_tracks(searcher, tracks: Sequence[SetTrack]) -> list[Match | None]:
     Args:
         searcher: Platform searcher.
         tracks: Tracks in set order.
+        order_known: Whether the source names the artist and the title itself,
+            so nothing is tried turned round.
 
     Returns:
         One entry per track, None when nothing passed the gates.
     """
+    if order_known:
+        return [_find(searcher, track.artist, track.title, track.album) for track in tracks]
     sample = range(min(ORDER_SAMPLE, len(tracks)))
     written = {i: _find(searcher, tracks[i].artist, tracks[i].title) for i in sample}
     turned = {
@@ -153,6 +162,7 @@ def sync_setlist(
     playlist_name: str,
     description: str = "",
     dry_run: bool = False,
+    order_known: bool = False,
 ) -> SetlistResult:
     """Puts the tracks of a set in a playlist, each recording once.
 
@@ -166,6 +176,7 @@ def sync_setlist(
         playlist_name: Name of the playlist.
         description: Description for a new playlist.
         dry_run: If True, nothing is created or added.
+        order_known: Whether the source names the artist and the title itself.
 
     Returns:
         What was matched and added.
@@ -173,7 +184,7 @@ def sync_setlist(
     result = SetlistResult(playlist_name)
     desired: list[str] = []
     chosen: dict[str, list[int | None]] = {}
-    for track, match in zip(tracks, match_tracks(searcher, tracks), strict=True):
+    for track, match in zip(tracks, match_tracks(searcher, tracks, order_known), strict=True):
         repeat = False
         if match:
             candidate = match.candidate

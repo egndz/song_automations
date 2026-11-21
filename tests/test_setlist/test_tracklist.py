@@ -4,14 +4,17 @@ import json
 import subprocess
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from song_automations.setlist import tracklist
 from song_automations.setlist.tracklist import (
     SetlistError,
     SetTrack,
+    fetch_music_list,
     fetch_video,
     parse_line,
+    parse_music_list,
     parse_tracklist,
     read_source,
 )
@@ -31,6 +34,8 @@ from song_automations.setlist.tracklist import (
         ("01..Mesa Dub || Federsen || Ranges 10 Years || Ranges", SetTrack("Mesa Dub", "Federsen", None, True)),
         ("Bicep - Glue - Part 2", SetTrack("Bicep", "Glue - Part 2")),
         ('Bicep - "Glue"', SetTrack("Bicep", "Glue")),
+        ("0:00 Bicep - Glue 5:12", SetTrack("Bicep", "Glue", 0)),
+        ("Bicep - " + "Glue " * 80, None),
         ("[00:45:10] ID - ID", None),
         ("5. Unknown - ???", None),
         ("Instagram - https://example.com/me", None),
@@ -166,3 +171,110 @@ def test_read_source_takes_a_tracklist_file(tmp_path, kind, said):
     else:
         video = read_source(str(path))
         assert (video.title, video.from_file, video.description) == ("Boiler Room", True, PLAIN)
+
+
+@pytest.mark.parametrize(
+    ("details", "video_id"),
+    [
+        ({"id": "rfwnQzS9KkA", "extractor_key": "Youtube"}, "rfwnQzS9KkA"),
+        ({"id": "12345", "extractor_key": "Vimeo"}, ""),
+        ({"extractor_key": "Youtube"}, ""),
+    ],
+)
+def test_fetch_video_keeps_the_id_of_a_youtube_video_only(monkeypatch, details, video_id):
+    """The music list is a YouTube page, so no other site gives an id to look it up with."""
+    monkeypatch.setattr(tracklist, "_downloader", lambda: ["yt-dlp"])
+    monkeypatch.setattr(tracklist.subprocess, "run", lambda command, **options: answer(json.dumps(details)))
+    assert fetch_video("https://example.com/watch?v=1").video_id == video_id
+
+
+def card(title, artist, album=None):
+    """Builds one song card of a video page.
+
+    Args:
+        title: Song title.
+        artist: Artists.
+        album: Release, None to leave it out.
+
+    Returns:
+        The card as the page nests it.
+    """
+    model = {"title": title, "subtitle": artist}
+    if album is not None:
+        model["secondarySubtitle"] = {"content": album}
+    return {"videoAttributeViewModel": model}
+
+
+def page(*cards, script=None):
+    """Builds a video page around song cards.
+
+    Args:
+        *cards: Song cards.
+        script: Text to use as the page data, None for the cards.
+
+    Returns:
+        The page.
+    """
+    data = json.dumps({"panels": [{"items": [{"shelf": {"cards": list(cards)}}]}], "other": {"n": 1}})
+    return f"<html><script>var ytInitialData = {data if script is None else script};</script></html>"
+
+
+THINK = card("Think Twice", "Detroit Experiment", "The Detroit Experiment")
+MANTECA = card("Manteca (Funky Lowlives Remix)", "Dizzy Gillespie, Funky Lowlives", "Verve Remixed 2")
+
+
+@pytest.mark.parametrize(
+    ("html", "songs"),
+    [
+        (
+            page(THINK, MANTECA),
+            [
+                SetTrack("Detroit Experiment", "Think Twice", album="The Detroit Experiment"),
+                SetTrack("Dizzy Gillespie, Funky Lowlives", "Manteca (Funky Lowlives Remix)", album="Verve Remixed 2"),
+            ],
+        ),
+        (page(THINK, THINK), [SetTrack("Detroit Experiment", "Think Twice", album="The Detroit Experiment")]),
+        (page(card("Think Twice", "Detroit Experiment")), [SetTrack("Detroit Experiment", "Think Twice")]),
+        (page(card("Think Twice", ""), card("", "Detroit Experiment")), []),
+        (page(), []),
+        (page(script="{broken"), []),
+        ("<html>no data</html>", []),
+    ],
+)
+def test_parse_music_list_reads_the_song_cards(html, songs):
+    """Songs come back in page order, once each, and a page without them gives none."""
+    assert parse_music_list(html) == songs
+
+
+@pytest.mark.parametrize(
+    ("video_id", "outcome", "requests", "found"),
+    [
+        ("rfwnQzS9KkA", 200, 1, 1),
+        ("rfwnQzS9KkA", 404, 1, 0),
+        ("rfwnQzS9KkA", httpx.ConnectError("down"), 1, 0),
+        ("../../etc", 200, 0, 0),
+        ("", 200, 0, 0),
+    ],
+)
+def test_fetch_music_list_never_fails_the_run(monkeypatch, video_id, outcome, requests, found):
+    """A page that cannot be read gives no songs, and only a real video id is ever requested."""
+    seen = []
+
+    def get(url, **options):
+        """Stands in for the page request.
+
+        Args:
+            url: Requested address.
+            **options: Request options.
+
+        Returns:
+            The prepared response.
+        """
+        seen.append(url)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return SimpleNamespace(status_code=outcome, text=page(THINK))
+
+    monkeypatch.setattr(tracklist.httpx, "get", get)
+    assert len(fetch_music_list(video_id)) == found
+    assert seen == ["https://www.youtube.com/watch?v=rfwnQzS9KkA"][:requests]

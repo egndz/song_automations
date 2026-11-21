@@ -145,7 +145,7 @@ During a sync the Want playlist is handled first, and a problem there never cost
 
 ### Playlist from a DJ set video
 
-Give the tool the link of a DJ set on YouTube and it makes a Spotify playlist of the tracks played. It reads the tracklist the uploader wrote, from the timestamps in the description or from the chapters of the video. Nothing is downloaded but the page details, and no audio is analysed, so a video without a written tracklist gives nothing.
+Give the tool the link of a DJ set on YouTube and it makes a Spotify playlist of the tracks played. It reads the tracklist the uploader wrote, from the timestamps in the description or from the chapters of the video. When there is none, it uses the songs YouTube itself lists under the video as the music it recognised. That list can miss tracks and is not in set order, and the command says when it is used. Nothing is downloaded but the page, and no audio is analysed.
 
 ```bash
 song-automations setlist "https://www.youtube.com/watch?v=VIDEO" --dry-run
