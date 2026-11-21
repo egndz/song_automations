@@ -71,6 +71,43 @@ def test_parse_tracklist_trusts_times_then_chapters_then_numbers(description, ch
     assert [track.artist for track in parse_tracklist(description, chapters, every_line)] == artists
 
 
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("00:03:52 The Message (Original Mix) by Chemars", SetTrack("Chemars", "The Message (Original Mix)", 232)),
+        ("00:00:00 Demucha - Edit by Crackazat", SetTrack("Crackazat", "Demucha - Edit", 0)),
+        ("2. Stand By Me by Ben E. King", SetTrack("Ben E. King", "Stand By Me", None, True)),
+        ("Glue BY Bicep", SetTrack("Bicep", "Glue")),
+        ("0:00 Bicep - Glue", None),
+        ("0:00 Standby", None),
+        ("0:00 ID by ID", None),
+    ],
+)
+def test_parse_line_reads_title_by_artist_when_asked(text, expected):
+    """A credited line is split at its last by, and a line without one is no track."""
+    assert parse_line(text, credited=True) == expected
+
+
+CREDITED = "00:00 Demucha - Edit by Crackazat\n03:52 The Message by Chemars\n08:27 Timba by AWA Band\n12:00 Glue by Bicep"
+MIXED_LAYOUTS = "0:00 Bicep - Glue\n5:00 Overmono - So U Kno\n9:00 Burial - Archangel\n12:00 Filmed by Someone"
+
+
+@pytest.mark.parametrize(
+    ("description", "chapters", "every_line", "tracks"),
+    [
+        (CREDITED, [], False, [("Crackazat", "Demucha - Edit"), ("Chemars", "The Message"), ("AWA Band", "Timba"), ("Bicep", "Glue")]),
+        (MIXED_LAYOUTS, [], False, [("Bicep", "Glue"), ("Overmono", "So U Kno"), ("Burial", "Archangel")]),
+        ("", [{"title": f"Song {n} by Artist {n}", "start_time": n * 60.0} for n in range(3)], False, [("Artist 0", "Song 0"), ("Artist 1", "Song 1"), ("Artist 2", "Song 2")]),
+        ("1. Glue by Bicep\n2. Archangel by Burial\n3. Hyph Mngo by Joy Orbison", [], False, [("Bicep", "Glue"), ("Burial", "Archangel"), ("Joy Orbison", "Hyph Mngo")]),
+        ("Glue by Bicep\nArchangel by Burial", [], True, [("Bicep", "Glue"), ("Burial", "Archangel")]),
+    ],
+)
+def test_parse_tracklist_uses_the_layout_that_fits_more_lines(description, chapters, every_line, tracks):
+    """Title by Artist is read when it fits more lines than Artist - Title, and never mixed with it."""
+    found = parse_tracklist(description, chapters, every_line)
+    assert [(track.artist, track.title) for track in found] == tracks
+
+
 def test_chapters_carry_their_start_time():
     """A track read from a chapter starts where the chapter starts."""
     assert [track.starts_at for track in parse_tracklist("", CHAPTERS)] == [0, 60, 120]

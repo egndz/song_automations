@@ -86,6 +86,16 @@ class FakeSpotify:
         """
         self.playlists[playlist_id] += [uri.rsplit(":", 1)[-1] for uri in uris]
 
+    def remove_tracks_from_playlist(self, playlist_id, uris):
+        """Removes tracks.
+
+        Args:
+            playlist_id: Playlist id.
+            uris: Track uris.
+        """
+        gone = {uri.rsplit(":", 1)[-1] for uri in uris}
+        self.playlists[playlist_id] = [t for t in self.playlists[playlist_id] if t not in gone]
+
 
 @pytest.fixture
 def spotify(monkeypatch, make_settings):
@@ -179,6 +189,29 @@ def test_a_written_tracklist_is_used_without_asking_youtube_for_its_list(spotify
     assert result.exit_code == 0
     assert "YouTube recognised" not in flat(result.output)
     assert asked == []
+
+
+@pytest.mark.parametrize(
+    ("options", "after", "said"),
+    [
+        (["--replace"], ["glue"], "1 taken out, and the playlist follows the order of the set."),
+        (["--replace", "--dry-run"], ["old", "glue"], "1 would be taken out"),
+        ([], ["old", "glue"], "0 added to the playlist"),
+    ],
+)
+def test_setlist_replace_rebuilds_an_existing_playlist(spotify, tmp_path, flat, options, after, said):
+    """Only a replace takes anything out, and it says how to undo it."""
+    spotify.playlists["Set - Boiler Room"] = ["old", "glue"]
+    source = tmp_path / "Boiler Room.txt"
+    source.write_text(TRACKLIST, encoding="utf-8")
+
+    result = runner.invoke(cli.app, ["setlist", str(source), *options])
+
+    output = flat(result.output)
+    assert result.exit_code == 0
+    assert said in output
+    assert spotify.playlists["Set - Boiler Room"] == after
+    assert ("restore" in output) == (options == ["--replace"])
 
 
 def test_setlist_stops_plainly_when_the_searches_are_used(spotify, tmp_path, flat):

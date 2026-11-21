@@ -154,8 +154,10 @@ song-automations setlist tracklist.txt --name "Sunday set"
 ```
 
 - **Matching**: the same checks as the sync, so a track that is not on Spotify is listed as not found instead of being replaced by something similar. A set gives no track lengths, so the title, the artist and the version carry the decision.
-- **Tracklists written title first**: recognised on the first three tracks, at the cost of up to three extra searches.
+- **Layouts**: lines are read as `Artist - Title` and as `Title by Artist`, and the layout that fits more lines is used. Tracklists written title first with a dash are recognised on the first three tracks, at the cost of up to three extra searches.
 - **Cuts from mixed compilations**: Spotify lists tracks of DJ mix albums blended into their neighbours. The track's own release is used when Spotify has it under the same title, otherwise the cut is used and marked in the table.
+- **Several copies of a track**: when Spotify has the same version more than once and nothing else tells the copies apart, the one whose title is closest to the tracklist is taken, so an extended remix is not swapped for its radio cut.
+- **Replace**: `--replace` makes an existing playlist hold exactly the set, in set order. What the playlist held is saved first and `restore` brings it back. Without it nothing is ever taken out.
 - **Playlist**: named `Set - <video title>` and private. Set `SETLIST_PLAYLIST_PREFIX` or pass `--name` to change the name. Tracks are only ever added, each recording once, so running a set again adds what was missing the first time and never removes anything.
 - **Tracklist file**: when the tracklist is somewhere else, such as a comment or a tracklist site, copy it into a text file with one `Artist - Title` per line and pass the file.
 - **Searches**: each track costs one Spotify search from the same daily allowance the sync uses.

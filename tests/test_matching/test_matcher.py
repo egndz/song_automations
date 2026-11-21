@@ -289,6 +289,29 @@ def test_assign_release_leaves_a_track_empty_rather_than_repeat():
     assert [m.candidate.id if m else None for m in assign_release(decisions)] == ["only", None]
 
 
+@pytest.mark.parametrize(
+    ("wanted", "titles", "chosen"),
+    [
+        ("Missing You (Michael Gray Extended Remix)", ["Missing You - Michael Gray Remix", "Missing You - Michael Gray Extended Remix"], "1"),
+        ("Main Piano (Original Mix)", ["Main Piano - (Piano & Strings Intro)", "Main Piano"], "1"),
+        ("The Message (Original Mix)", ["The Message", "The Message - Original Mix"], "1"),
+        ("Glue", ["Glue - Mixed", "Glue"], "1"),
+        ("Glue", ["Glue", "Glue"], "0"),
+    ],
+)
+def test_the_closest_title_settles_a_tie(wanted, titles, chosen):
+    """Without a length, the copy whose title differs least from the source is chosen, then the id."""
+    candidates = [spotify(title, "Bicep", id=str(index)) for index, title in enumerate(titles)]
+    assert decide(SourceTrack(("Bicep",), wanted), candidates).match.candidate.id == chosen
+
+
+def test_a_closer_title_never_beats_a_closer_length():
+    """The length still decides before the title does."""
+    candidates = [spotify("Glue - Original Mix", "Bicep", ms=230_000, id="far"), spotify("Glue", "Bicep", ms=201_000, id="near")]
+    source = SourceTrack(("Bicep",), "Glue (Original Mix)", duration_ms=200_000)
+    assert decide(source, candidates).match.candidate.id == "near"
+
+
 def coded(id: str, title: str, isrc: str, ms: int) -> Candidate:
     """Builds a Spotify style candidate that carries a recording code.
 
