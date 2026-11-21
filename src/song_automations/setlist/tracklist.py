@@ -10,8 +10,24 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import httpx
+
 MIN_TRACKS = 3
+MAX_LINE_LENGTH = 300
 FETCH_TIMEOUT_SECONDS = 120
+PAGE_TIMEOUT_SECONDS = 30
+WATCH_PAGE = "https://www.youtube.com/watch?v={}"
+VIDEO_ID = re.compile(r"[\w-]{11}")
+PAGE_DATA = "var ytInitialData = "
+MUSIC_CARD = "videoAttributeViewModel"
+PAGE_HEADERS = {
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cookie": "SOCS=CAI",
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+    ),
+}
 CLOCK = r"(?:(\d{1,2}):)?(\d{1,2}):(\d{2})"
 LEADING_TIME = re.compile(rf"^\s*[\[(]?{CLOCK}[\])]?[\s\-–—:|.]*")
 TRAILING_TIME = re.compile(rf"[\s\-–—|]*[\[(]?{CLOCK}[\])]?\s*$")
@@ -36,12 +52,14 @@ class SetTrack:
         title: Second field of the line, the title in most tracklists.
         starts_at: Second of the set the track starts at, None when the line gives no time.
         numbered: Whether the line carried a running number.
+        album: Release the track is on, empty when the source does not say.
     """
 
     artist: str
     title: str
     starts_at: int | None = None
     numbered: bool = False
+    album: str = ""
 
 
 @dataclass(frozen=True)
@@ -54,6 +72,7 @@ class Video:
         chapters: Chapters of the video, each with a title and a start_time.
         url: Link of the video, empty for a file.
         from_file: Whether the text is a file the user wrote the tracklist in.
+        video_id: YouTube id of the video, empty for a file or another site.
     """
 
     title: str
@@ -61,6 +80,7 @@ class Video:
     chapters: tuple[dict, ...] = ()
     url: str = ""
     from_file: bool = False
+    video_id: str = ""
 
 
 def _seconds(found: re.Match) -> int:
@@ -87,10 +107,10 @@ def parse_line(text: str) -> SetTrack | None:
         text: Line of a description, or the title of a chapter.
 
     Returns:
-        The track, or None when the line is a link, names an unknown track or
-        does not have two fields.
+        The track, or None when the line is a link, is too long to be a
+        track, names an unknown track or does not have two fields.
     """
-    if "http" in text.lower():
+    if len(text) > MAX_LINE_LENGTH or "http" in text.lower():
         return None
     rest, starts_at, numbered = text, None, False
     while True:
@@ -106,8 +126,8 @@ def parse_line(text: str) -> SetTrack | None:
     while TRAILING_NOTE.search(rest):
         rest = TRAILING_NOTE.sub("", rest)
     found = TRAILING_TIME.search(rest)
-    if found and starts_at is None:
-        starts_at = _seconds(found)
+    if found:
+        starts_at = _seconds(found) if starts_at is None else starts_at
         rest = rest[: found.start()]
     fields = PIPE.split(rest) if "|" in rest else DASH.split(rest, maxsplit=1)
     fields = [part.strip(QUOTES) for part in fields if part.strip(QUOTES)]
@@ -186,6 +206,8 @@ def fetch_video(url: str) -> Video:
         "--ignore-no-formats-error",
         "--no-warnings",
         "--no-playlist",
+        "--playlist-items",
+        "1",
         "--skip-download",
         "--dump-json",
         "--",
@@ -210,7 +232,68 @@ def fetch_video(url: str) -> Video:
         description=str(details.get("description") or ""),
         chapters=tuple(details.get("chapters") or ()),
         url=url,
+        video_id=str(details.get("id") or "") if details.get("extractor_key") == "Youtube" else "",
     )
+
+
+def parse_music_list(page: str) -> list[SetTrack]:
+    """Reads the songs YouTube says it recognised in a video.
+
+    The video page carries them as cards under the description, each with a
+    title, the artists and the release.
+
+    Args:
+        page: The video page.
+
+    Returns:
+        The songs in the order of the page, empty when the page lists none.
+    """
+    start = page.find(PAGE_DATA)
+    if start < 0:
+        return []
+    try:
+        data, _ = json.JSONDecoder().raw_decode(page, start + len(PAGE_DATA))
+    except ValueError:
+        return []
+    songs: dict[SetTrack, None] = {}
+    pending = [data]
+    while pending:
+        node = pending.pop()
+        if isinstance(node, list):
+            pending.extend(reversed(node))
+        elif isinstance(node, dict):
+            card = node.get(MUSIC_CARD)
+            if isinstance(card, dict):
+                title, artist = str(card.get("title") or ""), str(card.get("subtitle") or "")
+                release = card.get("secondarySubtitle")
+                album = str(release.get("content") or "") if isinstance(release, dict) else ""
+                if title.strip() and artist.strip():
+                    songs[SetTrack(artist.strip(), title.strip(), album=album.strip())] = None
+            pending.extend(reversed(list(node.values())))
+    return list(songs)
+
+
+def fetch_music_list(video_id: str) -> list[SetTrack]:
+    """Fetches the songs YouTube recognised in a video.
+
+    Args:
+        video_id: YouTube id of the video.
+
+    Returns:
+        The songs, empty when the page could not be read or lists none.
+    """
+    if not VIDEO_ID.fullmatch(video_id):
+        return []
+    try:
+        response = httpx.get(
+            WATCH_PAGE.format(video_id),
+            headers=PAGE_HEADERS,
+            timeout=PAGE_TIMEOUT_SECONDS,
+            follow_redirects=True,
+        )
+    except httpx.HTTPError:
+        return []
+    return parse_music_list(response.text) if response.status_code == 200 else []
 
 
 def read_source(source: str) -> Video:

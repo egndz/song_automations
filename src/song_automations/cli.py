@@ -35,7 +35,12 @@ from song_automations.reports.matches import write_match_report
 from song_automations.reports.missing import generate_missing_report
 from song_automations.schedule import schedule_app
 from song_automations.setlist.sync import SetlistResult, is_mixed_cut, sync_setlist
-from song_automations.setlist.tracklist import SetlistError, parse_tracklist, read_source
+from song_automations.setlist.tracklist import (
+    SetlistError,
+    fetch_music_list,
+    parse_tracklist,
+    read_source,
+)
 from song_automations.snapshots import (
     RestoreStep,
     RestoreStoppedError,
@@ -387,18 +392,27 @@ def setlist(
         console.print(f"[red]{escape(str(error))}[/red]")
         raise typer.Exit(1) from error
     tracks = parse_tracklist(video.description, video.chapters, every_line=video.from_file)
+    recognised = not tracks and bool(video.video_id)
+    if recognised:
+        tracks = fetch_music_list(video.video_id)
     if not tracks:
         console.print(
-            "[yellow]No tracklist found in the description or the chapters. Copy the tracklist "
-            "into a text file, one 'Artist - Title' per line, and pass the file instead.[/yellow]"
+            "[yellow]No tracklist found in the description, the chapters or the music YouTube "
+            "lists for the video. Copy the tracklist into a text file, one 'Artist - Title' per "
+            "line, and pass the file instead.[/yellow]"
         )
         raise typer.Exit(1)
+    if recognised:
+        console.print(
+            f"[yellow]No written tracklist. Using the {len(tracks)} songs YouTube recognised in "
+            "the video, which can miss tracks and are not in set order.[/yellow]"
+        )
     playlist_name = (name or f"{settings.setlist_playlist_prefix}{video.title}")[:SETLIST_NAME_LIMIT]
     description = f"Tracklist of {video.url}" if video.url else "Made from a tracklist"
     with _friendly_errors(settings):
         client = SpotifyClient(settings)
         searcher = SpotifySearcher(client, StateTracker(settings.db_path))
-        result = sync_setlist(client, searcher, tracks, playlist_name, description, dry_run)
+        result = sync_setlist(client, searcher, tracks, playlist_name, description, dry_run, recognised)
     console.print(_setlist_table(result))
     found = sum(row.match is not None for row in result.rows)
     console.print(f"{found} of {len(result.rows)} tracks found on Spotify.")

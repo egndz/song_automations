@@ -7,6 +7,7 @@ from typer.testing import CliRunner
 
 from song_automations import cli
 from song_automations.errors import SearchBudgetExhaustedError
+from song_automations.setlist.tracklist import SetTrack, Video
 
 runner = CliRunner()
 TRACKLIST = "Bicep - Glue\nOvermono - So U Kno\n"
@@ -142,6 +143,42 @@ def test_setlist_says_when_there_is_nothing_to_read(spotify, tmp_path, flat, tex
     assert result.exit_code == 1
     assert said in flat(result.output)
     assert spotify.playlists == {}
+
+
+@pytest.mark.parametrize(
+    ("songs", "code", "said", "playlists"),
+    [
+        ([SetTrack("Bicep", "Glue", album="Isles")], 0, "Using the 1 songs YouTube recognised", {"Set - Night": ["glue"]}),
+        ([], 1, "No tracklist found", {}),
+    ],
+)
+def test_setlist_falls_back_to_the_music_youtube_lists(spotify, monkeypatch, flat, songs, code, said, playlists):
+    """A video without a written tracklist uses the songs YouTube recognised, and says so."""
+    asked = []
+    video = Video(title="Night", description="Thanks for watching", url="https://example.com/v", video_id="rfwnQzS9KkA")
+    monkeypatch.setattr(cli, "read_source", lambda source: video)
+    monkeypatch.setattr(cli, "fetch_music_list", lambda video_id: asked.append(video_id) or songs)
+
+    result = runner.invoke(cli.app, ["setlist", "https://example.com/v"])
+
+    assert result.exit_code == code
+    assert said in flat(result.output)
+    assert asked == ["rfwnQzS9KkA"]
+    assert spotify.playlists == playlists
+
+
+def test_a_written_tracklist_is_used_without_asking_youtube_for_its_list(spotify, monkeypatch, flat):
+    """The page is only fetched when the description and the chapters give nothing."""
+    asked = []
+    video = Video(title="Night", description="0:00 Bicep - Glue\n5:00 Bicep - Glue\n9:00 Bicep - Glue", url="https://example.com/v", video_id="rfwnQzS9KkA")
+    monkeypatch.setattr(cli, "read_source", lambda source: video)
+    monkeypatch.setattr(cli, "fetch_music_list", lambda video_id: asked.append(video_id) or [])
+
+    result = runner.invoke(cli.app, ["setlist", "https://example.com/v", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "YouTube recognised" not in flat(result.output)
+    assert asked == []
 
 
 def test_setlist_stops_plainly_when_the_searches_are_used(spotify, tmp_path, flat):
